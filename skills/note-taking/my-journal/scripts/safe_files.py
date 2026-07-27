@@ -115,6 +115,8 @@ def safe_read_text(root: Path, target: Path, *, max_bytes: int) -> str:
             if total > max_bytes:
                 raise ValueError("file exceeds configured byte limit")
         return b"".join(chunks).decode("utf-8")
+    except FileNotFoundError:
+        raise
     except UnicodeDecodeError as exc:
         raise ValueError("file is not valid UTF8") from exc
     except OSError as exc:
@@ -124,6 +126,26 @@ def safe_read_text(root: Path, target: Path, *, max_bytes: int) -> str:
     finally:
         if file_descriptor is not None:
             os.close(file_descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+
+
+def safe_unlink(root: Path, target: Path, *, missing_ok: bool = False) -> None:
+    """Remove one regular file below root through its anchored parent descriptor."""
+    parent_descriptor: int | None = None
+    try:
+        parent_descriptor, name = _open_parent(root, target)
+        try:
+            metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            if missing_ok:
+                return
+            raise
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise ValueError("unlink target must be a regular file")
+        os.unlink(name, dir_fd=parent_descriptor)
+        os.fsync(parent_descriptor)
+    finally:
         if parent_descriptor is not None:
             os.close(parent_descriptor)
 

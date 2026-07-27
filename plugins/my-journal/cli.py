@@ -11,7 +11,7 @@ from .tools import (
     handle_resolve_range,
     handle_status,
 )
-from .operations import maintenance, preview, purge, run_generation, schedule_create, schedule_remove
+from .operations import maintenance, preview, purge, run_backfill, run_generation, schedule_create, schedule_remove
 
 
 def register_cli(parser: argparse.ArgumentParser) -> None:
@@ -57,13 +57,7 @@ def journal_command(args: argparse.Namespace) -> int:
             )
         )
     elif command == "backfill":
-        plan = preview(args.range)
-        output = json.dumps(
-            run_generation(
-                f"Backfill every missing journal date in {args.range}.",
-                expected_dates=plan["missing_dates"],
-            )
-        )
+        output = json.dumps(run_backfill(args.range))
     elif command == "preview":
         output = json.dumps(preview(args.range))
     elif command == "cron-setup":

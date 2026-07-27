@@ -409,6 +409,21 @@ def read_validated_entries(
     }
 
 
+def validated_entry_dates(root: Path, start: date, end: date) -> set[str]:
+    """Return canonical dates whose notes pass complete evidence validation."""
+    if start > end:
+        raise ValueError("start date must not follow end date")
+    accepted: set[str] = set()
+    for item in discover_entries(root):
+        day = date.fromisoformat(item["date"])
+        if day < start or day > end:
+            continue
+        valid, _, _ = validate_entry_content(Path(item["path"]), root=root)
+        if valid:
+            accepted.add(item["date"])
+    return accepted
+
+
 def journal_status(
     root: Path,
     *,

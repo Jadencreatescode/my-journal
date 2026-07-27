@@ -10,8 +10,8 @@ dist/
 build/
 *.tar.gz
 *.zip
-journal/
-evidence/
-runs/
-pending/
-backups/
+/journal/
+/evidence/
+/runs/
+/pending/
+/backups/

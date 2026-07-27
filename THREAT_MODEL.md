@@ -26,6 +26,8 @@
 6. Exact coverage validation before completion state is committed.
 7. Transaction records and rollback for installation lifecycle operations.
 8. Deterministic release archives built from a Git reference.
+9. Unattended generation receives only four dedicated journal generation tools. It has no terminal, web, general file, delegation, messaging, MCP, or unrelated plugin tools.
+10. Packet text is structurally labeled untrusted data. Canonical note and completion state replacement roll back together if final validation fails.
 
 ## Outside scope
 

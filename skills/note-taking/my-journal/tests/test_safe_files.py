@@ -19,6 +19,24 @@ def load_module():
 
 
 class SafeFileTests(unittest.TestCase):
+    def test_unlink_removes_owned_regular_file_but_rejects_symlink(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "root"
+            root.mkdir()
+            owned = root / "owned.txt"
+            owned.write_text("owned", encoding="utf-8")
+            module.safe_unlink(root, owned)
+            self.assertFalse(owned.exists())
+
+            external = Path(tmp) / "external.txt"
+            external.write_text("keep", encoding="utf-8")
+            link = root / "link.txt"
+            link.symlink_to(external)
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                module.safe_unlink(root, link)
+            self.assertEqual(external.read_text(encoding="utf-8"), "keep")
+
     def test_atomic_write_remains_anchored_when_parent_is_swapped(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

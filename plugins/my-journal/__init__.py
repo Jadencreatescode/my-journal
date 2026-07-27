@@ -6,10 +6,19 @@ from .cli import journal_command, register_cli
 from .tools import (
     BACKFILL_SCHEMA,
     GAPS_SCHEMA,
+    GENERATION_COLLECT_SCHEMA,
+    GENERATION_COMPLETE_SCHEMA,
+    GENERATION_GET_CHUNK_SCHEMA,
+    GENERATION_RECORD_DIGEST_SCHEMA,
+    GENERATION_TOOLSET,
     RANGE_SCHEMA,
     READ_SCHEMA,
     STATUS_SCHEMA,
     handle_find_gaps,
+    handle_generation_collect,
+    handle_generation_complete,
+    handle_generation_get_chunk,
+    handle_generation_record_digest,
     handle_plan_backfill,
     handle_read_entries,
     handle_resolve_range,
@@ -31,6 +40,19 @@ def register(ctx) -> None:
             schema=schema,
             handler=handler,
             emoji="📓",
+        )
+    for name, schema, handler in (
+        ("journal_generation_collect", GENERATION_COLLECT_SCHEMA, handle_generation_collect),
+        ("journal_generation_get_chunk", GENERATION_GET_CHUNK_SCHEMA, handle_generation_get_chunk),
+        ("journal_generation_record_digest", GENERATION_RECORD_DIGEST_SCHEMA, handle_generation_record_digest),
+        ("journal_generation_complete", GENERATION_COMPLETE_SCHEMA, handle_generation_complete),
+    ):
+        ctx.register_tool(
+            name=name,
+            toolset=GENERATION_TOOLSET,
+            schema=schema,
+            handler=handler,
+            emoji="🔒",
         )
     ctx.register_cli_command(
         name="journal",

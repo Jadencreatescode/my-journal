@@ -12,6 +12,8 @@ Private runtime data can include evidence manifests, packet chunks, digest recei
 
 Evidence chunks and digests used for generation can be sent to the model provider configured in Hermes. Users should review their provider terms and data settings before enabling collection.
 
+Unattended generation runs with the dedicated `my-journal-generation` toolset. That toolset can collect one configured date, retrieve bounded immutable chunks, record bound digest receipts, and publish only through full validation. It does not expose general Hermes tools.
+
 ## Public provenance policy
 
 The alpha uses stable nonreversible coverage references. Raw session identifiers, chat identifiers, thread identifiers, and absolute database paths are not published in evidence artifacts. No reversible private identifier map is created.
@@ -22,4 +24,4 @@ Known credential formats are redacted. Email and phone data are masked under the
 
 ## Deletion
 
-`hermes journal purge` previews owned journal data. Applying purge requires the exact confirmation phrase and preserves `config.json`. Uninstall removes installed code while preserving journal data. Session databases are never purge targets.
+`hermes journal purge` previews owned journal data and automation receipts. Applying purge requires the exact confirmation phrase, disables the exact recorded Hermes cron job before deletion, removes generation receipts, and preserves `config.json`. If cron removal fails, journal data is preserved. Uninstall removes installed code while preserving journal data. Session databases are never purge targets.

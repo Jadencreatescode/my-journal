@@ -2,7 +2,7 @@
 
 **The evidence backed activity journal for Hermes.**
 
-My Journal `0.1.0-alpha.1` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, five deterministic model tools, and the scriptable `hermes journal` command family.
+My Journal `0.1.0-alpha.1` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, five deterministic read tools, four restricted generation tools, and the scriptable `hermes journal` command family.
 
 This is an alpha. Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` before enabling collection.
 
@@ -100,7 +100,7 @@ hermes journal resolve-range "last month"
 hermes journal maintenance
 ```
 
-Generation commands use Hermes with both journal skills and verify that validated canonical notes exist before reporting success:
+Generation commands use Hermes with the dedicated `my-journal-generation` toolset. It exposes only four bounded journal operations and excludes terminal, web, general file, delegation, messaging, MCP, and unrelated plugin tools. Generation verifies that validated canonical notes exist before reporting success:
 
 ```text
 hermes journal generate 2026-07-27
@@ -134,13 +134,14 @@ Upgrade transactionally:
 python3 install.py --hermes-home /path/to/hermes/home --upgrade
 ```
 
-Restore the previous installation snapshot:
+Restore the previous installation snapshot. Restore refuses locally modified installed components unless force is explicit:
 
 ```text
 python3 install.py --hermes-home /path/to/hermes/home --restore
+python3 install.py --hermes-home /path/to/hermes/home --restore --force
 ```
 
-Recover an activation interrupted by process death:
+Recover an install, restore, or uninstall interrupted by process death:
 
 ```text
 python3 install.py --hermes-home /path/to/hermes/home --recover
@@ -152,7 +153,7 @@ Uninstall code while preserving journal data:
 python3 install.py --hermes-home /path/to/hermes/home --uninstall
 ```
 
-Modified installed code is protected. Explicit removal requires `--force` with `--uninstall`.
+Modified installed code is protected. Explicit replacement or removal requires `--force` with `--restore` or `--uninstall`. Lifecycle operations use one advisory lock per Hermes home and refuse concurrent execution.
 
 ## Privacy summary
 
@@ -166,7 +167,7 @@ Modified installed code is protected. Explicit removal requires `--force` with `
 
 ## Validation contract
 
-Completion fails closed unless manifest shape, timezone window, evidence identity, counts, coverage, privacy policy, digest receipts, required headings, provenance, and canonical date all reconcile. Reads return the exact validated snapshot and do not mutate completion state.
+Completion fails closed unless manifest shape, timezone window, evidence identity, counts, coverage, privacy policy, digest receipts, required headings, provenance, and canonical date all reconcile. Canonical note and completion state publication roll back together if the final check fails. Reads return the exact validated snapshot and do not mutate completion state.
 
 ## Development and release
 

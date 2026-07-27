@@ -144,6 +144,63 @@ class JournalValidationTests(unittest.TestCase):
             module.validate_manifest(manifest),
         )
 
+    def test_schema_two_accepts_masked_coverage_reference_and_numeric_timestamps(self):
+        module = load_module()
+        manifest = self._schema_two_manifest(module)
+        reference = module.hashlib.sha256(b"default\0private-session").hexdigest()
+        manifest["policy"].update({
+            "pii_mode": "mask",
+            "entropy_mode": "report",
+            "profiles": ["default"],
+            "platforms": ["cli"],
+        })
+        manifest["sessions"] = [{
+            "profile": "default",
+            "platform": "cli",
+            "session_id": reference,
+            "title": "Normal session",
+            "started_at": manifest["window"]["start_ts"] + 1,
+            "chat_id": None,
+            "thread_id": None,
+            "display_name": "",
+            "coverage_ref": reference,
+            "context_label": "unclassified",
+            "messages": [{
+                "message_id": 1,
+                "role": "user",
+                "timestamp": manifest["window"]["start_ts"] + 2,
+                "content": "ordinary content",
+                "tool_name": None,
+                "tool_calls": None,
+            }],
+        }]
+        manifest["databases"] = [{
+            "profile": "default",
+            "path": "default/state.db",
+            "status": "ok",
+            "message_count": 1,
+            "session_count": 1,
+        }]
+        manifest["coverage"].update({
+            "database_count": 1,
+            "database_error_count": 0,
+            "session_count": 1,
+            "message_count": 1,
+            "retained_message_count": 1,
+            "retained_char_count": len("ordinary content"),
+            "platforms": ["cli"],
+            "profiles": ["default"],
+        })
+        chunk = manifest["delivery"]["chunks"][0]
+        chunk["owned_session_refs"] = [reference]
+        manifest["delivery"]["chunk_index_sha256"] = hashlib.sha256(
+            json.dumps([chunk], sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        manifest["evidence_sha256"] = module.canonical_evidence_sha256(manifest)
+        manifest["run_id"] = manifest["evidence_sha256"][:16]
+
+        self.assertEqual(module.validate_manifest(manifest), [])
+
     def test_schema_two_requires_valid_delivery_index(self):
         module = load_module()
         manifest = self._schema_two_manifest(module)

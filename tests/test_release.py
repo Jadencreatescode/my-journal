@@ -32,16 +32,42 @@ def create_repo(root: Path) -> str:
     git(root, "init", "-q")
     git(root, "config", "user.email", "release-tests@example.invalid")
     git(root, "config", "user.name", "Release Tests")
-    (root / "README.md").write_text("release fixture\n", encoding="utf-8")
-    package = root / "plugins" / "my-journal"
-    package.mkdir(parents=True)
-    (package / "plugin.yaml").write_text("version: 0.1.0-alpha.1\n", encoding="utf-8")
+    required_files = {
+        "README.md": "release fixture\n",
+        "LICENSE": "MIT\n",
+        "install.py": "print('fixture')\n",
+        "plugins/my-journal/plugin.yaml": "version: 0.1.0-alpha.1\n",
+        "plugins/my-journal/__init__.py": "VALUE = 1\n",
+        "skills/note-taking/my-journal/SKILL.md": "# Evidence skill\n",
+        "skills/note-taking/journal/SKILL.md": "# Journal skill\n",
+    }
+    for relative, content in required_files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
     git(root, "add", ".")
     git(root, "commit", "-q", "-m", "fixture")
     return git(root, "rev-parse", "HEAD")
 
 
 class ReleaseToolTests(unittest.TestCase):
+    def test_git_tracks_every_required_installer_component(self):
+        tracked = set(
+            subprocess.run(
+                ["git", "ls-files"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+        )
+        required = {
+            "skills/note-taking/my-journal/SKILL.md",
+            "skills/note-taking/journal/SKILL.md",
+            "plugins/my-journal/plugin.yaml",
+        }
+        self.assertEqual(required - tracked, set())
+
     def test_two_builds_of_exact_commit_are_byte_identical_and_safe(self):
         builder = load_script("build_release")
         verifier = load_script("verify_release")
@@ -81,6 +107,23 @@ class ReleaseToolTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "exact deterministic build"):
                 verifier.verify(second_commit, archive, repo=repo)
+
+    def test_verifier_rejects_exact_archive_missing_installer_component(self):
+        builder = load_script("build_release")
+        verifier = load_script("verify_release")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            repo.mkdir()
+            create_repo(repo)
+            (repo / "skills" / "note-taking" / "journal" / "SKILL.md").unlink()
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", "remove required skill")
+            commit = git(repo, "rev-parse", "HEAD")
+            archive = builder.build(commit, base / "dist", repo=repo)
+
+            with self.assertRaisesRegex(ValueError, "required release member"):
+                verifier.verify(commit, archive, repo=repo)
 
     def test_release_tree_allows_skill_named_journal_but_rejects_runtime_data(self):
         checker = load_script("check_release_tree")

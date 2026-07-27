@@ -12,3 +12,7 @@ provides_tools:
   - journal_read_entries
   - journal_find_gaps
   - journal_plan_backfill
+  - journal_generation_collect
+  - journal_generation_get_chunk
+  - journal_generation_record_digest
+  - journal_generation_complete

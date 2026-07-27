@@ -118,6 +118,17 @@ def _validate_delivery(manifest: dict[str, Any], session_refs: list[str]) -> lis
     return errors
 
 
+def _privacy_string_values(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for nested in value.values():
+            yield from _privacy_string_values(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _privacy_string_values(nested)
+
+
 def validate_manifest(manifest: Any) -> list[str]:
     """Validate internal manifest identity, shape, and coverage consistency."""
     errors: list[str] = []
@@ -251,9 +262,21 @@ def validate_manifest(manifest: Any) -> list[str]:
             profile = item.get("profile")
             session_id = item.get("session_id")
             if isinstance(profile, str) and isinstance(session_id, str):
-                derived_ref = hashlib.sha256(f"{profile}\0{session_id}".encode("utf-8")).hexdigest()
-                if reference != derived_ref:
-                    errors.append("session field coverage_ref does not match profile and session_id")
+                policy = manifest.get("policy")
+                masked = (
+                    schema_version == 2
+                    and isinstance(policy, dict)
+                    and policy.get("pii_mode") == "mask"
+                )
+                if masked:
+                    if session_id != reference:
+                        errors.append("masked session_id must equal coverage_ref")
+                else:
+                    derived_ref = hashlib.sha256(
+                        f"{profile}\0{session_id}".encode("utf-8")
+                    ).hexdigest()
+                    if reference != derived_ref:
+                        errors.append("session field coverage_ref does not match profile and session_id")
             started_at = item.get("started_at")
             if started_at is not None and (
                 isinstance(started_at, bool)
@@ -397,9 +420,8 @@ def validate_manifest(manifest: Any) -> list[str]:
             if entropy_mode not in {"report", "redact", "off"}:
                 errors.append("schema 2 policy has invalid entropy_mode")
                 entropy_mode = "report"
-            evidence_text = json.dumps(
-                {"databases": databases, "sessions": sessions},
-                ensure_ascii=False,
+            evidence_text = "\n".join(
+                _privacy_string_values({"databases": databases, "sessions": sessions})
             )
             findings = sensitive_finding_counts(
                 evidence_text,

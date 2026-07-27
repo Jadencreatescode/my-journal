@@ -12,6 +12,15 @@ The plugin registers these model tools:
 * `journal_find_gaps`
 * `journal_plan_backfill`
 
+Read tools use the `journal` toolset. Unattended generation uses a separate `my-journal-generation` toolset containing only:
+
+* `journal_generation_collect`
+* `journal_generation_get_chunk`
+* `journal_generation_record_digest`
+* `journal_generation_complete`
+
+The generation toolset does not include terminal, web, general file, delegation, messaging, MCP, or unrelated plugin tools.
+
 It also registers the scriptable command family:
 
 ```text
@@ -45,6 +54,8 @@ The standard release declares Linux and macOS support. Native Windows support re
 ## Safety contract
 
 `journal_read_entries` returns note content only after the evidence manifest, digest bindings, exact session coverage, provenance, and secret checks pass. Validation is in memory and does not write completion state.
+
+Generation collects once or resumes the same immutable packet plan, requires a bound digest receipt for every chunk, and publishes only after full evidence validation. If final publication fails, the previous canonical note and completion state are restored together.
 
 Validated note text is capped at 200,000 characters per request. Accepted and rejected record metadata, status entries, and calendar gap lists are independently capped and report when truncation occurred.
 

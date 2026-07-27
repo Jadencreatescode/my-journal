@@ -9,6 +9,7 @@ from typing import Any
 
 from atomic_files import atomic_write_text
 from collect_journal import reject_symlink_components
+from safe_files import safe_read_text
 
 
 _RESERVED_PREFIXES = (
@@ -65,11 +66,9 @@ def _header_values(text: str) -> tuple[dict[str, str], list[str], str]:
 def load_packet_plan(plan_path: Path) -> dict[str, Any]:
     """Load and verify an immutable packet plan and every indexed chunk."""
     plan_path = plan_path.expanduser().absolute()
-    reject_symlink_components(plan_path)
-    if plan_path.is_symlink() or not plan_path.is_file():
-        raise ValueError(f"packet plan is not a regular file: {plan_path}")
+    journal_root = _journal_root(plan_path)
     try:
-        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan = json.loads(safe_read_text(journal_root, plan_path, max_bytes=2_000_000))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"packet plan could not be read: {exc}") from exc
     if not isinstance(plan, dict) or plan.get("schema_version") != 1:
@@ -108,13 +107,10 @@ def load_packet_plan(plan_path: Path) -> dict[str, Any]:
         chunk_path = Path(str(item.get("path", ""))).expanduser().absolute()
         if not _inside_lexically(chunk_path, run_dir):
             raise ValueError("packet chunk path is outside its run directory")
-        reject_symlink_components(chunk_path)
-        if chunk_path.is_symlink() or not chunk_path.is_file():
-            raise ValueError(f"packet chunk is not a regular file: {chunk_path}")
-        raw = chunk_path.read_bytes()
+        text = safe_read_text(journal_root, chunk_path, max_bytes=2_000_000)
+        raw = text.encode("utf-8")
         if _sha256_bytes(raw) != item.get("sha256"):
             raise ValueError("packet chunk file hash does not match its plan")
-        text = raw.decode("utf-8")
         header, body = text.split("\n---\n", 1)
         values = {
             line.split(": ", 1)[0]: line.split(": ", 1)[1]
@@ -185,10 +181,8 @@ def next_pending_chunk(plan_path: Path, digest_dir: Path) -> dict[str, Any] | No
         path = _digest_path(digest_dir, chunk)
         if not path.exists():
             return dict(chunk)
-        reject_symlink_components(path)
-        if path.is_symlink() or not path.is_file():
-            raise ValueError("digest receipt is not a regular file")
-        _validate_receipt(path.read_text(encoding="utf-8"), plan, chunk)
+        text = safe_read_text(_journal_root(plan_path), path, max_bytes=1_000_000)
+        _validate_receipt(text, plan, chunk)
     return None
 
 
@@ -216,10 +210,9 @@ def accept_chunk_digest(
     receipt_text = _render_receipt(plan, chunk, digest_body)
     receipt_path = _digest_path(digest_dir, chunk)
     if receipt_path.exists() or receipt_path.is_symlink():
-        reject_symlink_components(receipt_path)
-        if receipt_path.is_symlink() or not receipt_path.is_file():
-            raise ValueError("digest receipt is not a regular file")
-        existing = receipt_path.read_text(encoding="utf-8")
+        existing = safe_read_text(
+            _journal_root(plan_path), receipt_path, max_bytes=1_000_000
+        )
         _validate_receipt(existing, plan, chunk)
         if existing != receipt_text:
             raise ValueError("chunk already has a different digest")

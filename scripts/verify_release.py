@@ -11,6 +11,15 @@ FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".pyc", ".zip"}
 MAX_MEMBERS = 5000
 MAX_MEMBER_BYTES = 20_000_000
 MAX_TOTAL_BYTES = 100_000_000
+REQUIRED_RELEASE_FILES = {
+    "README.md",
+    "LICENSE",
+    "install.py",
+    "plugins/my-journal/plugin.yaml",
+    "plugins/my-journal/__init__.py",
+    "skills/note-taking/my-journal/SKILL.md",
+    "skills/note-taking/journal/SKILL.md",
+}
 
 
 def _builder_module():
@@ -41,6 +50,15 @@ def verify(ref: str, archive: Path, *, repo: Path | None = None) -> dict:
         names = [member.name for member in members]
         if names != sorted(names) or len(names) != len(set(names)):
             raise ValueError("archive members must be unique and sorted")
+        missing_required = sorted(
+            relative
+            for relative in REQUIRED_RELEASE_FILES
+            if builder.PREFIX + relative not in names
+        )
+        if missing_required:
+            raise ValueError(
+                "archive is missing required release member: " + ", ".join(missing_required)
+            )
         for member in members:
             path = Path(member.name)
             archive_root = builder.PREFIX.rstrip("/")
