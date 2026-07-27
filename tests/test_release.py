@@ -6,6 +6,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -52,6 +53,15 @@ def create_repo(root: Path) -> str:
 
 class ReleaseToolTests(unittest.TestCase):
     def test_git_tracks_every_required_installer_component(self):
+        worktree = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if worktree.returncode != 0 or worktree.stdout.strip() != "true":
+            self.skipTest("release tree is not inside a Git worktree")
         tracked = set(
             subprocess.run(
                 ["git", "ls-files"],
@@ -67,6 +77,17 @@ class ReleaseToolTests(unittest.TestCase):
             "plugins/my-journal/plugin.yaml",
         }
         self.assertEqual(required - tracked, set())
+
+    def test_git_component_check_skips_outside_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            f"{__name__}.ROOT", Path(tmp)
+        ):
+            result = unittest.TestResult()
+            self.__class__("test_git_tracks_every_required_installer_component").run(result)
+
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [])
+        self.assertEqual(len(result.skipped), 1)
 
     def test_two_builds_of_exact_commit_are_byte_identical_and_safe(self):
         builder = load_script("build_release")

@@ -302,6 +302,9 @@ class InstallerSecurityTests(unittest.TestCase):
                 destination = home / target
                 self.assertEqual((destination / "original.txt").read_text(encoding="utf-8"), "original")
             self.assertEqual(list(home.rglob("*.backup-*")), [])
+            self.assertEqual(list(home.glob(".my-journal-stage-*")), [])
+            self.assertFalse((home / ".my-journal" / "install-transaction.json").exists())
+
     def test_commit_failure_rolls_back_every_destination(self):
         installer = load_installer()
         with tempfile.TemporaryDirectory() as tmp:
@@ -355,6 +358,25 @@ class InstallerHardeningRegressionTests(unittest.TestCase):
             with self.assertRaises((OSError, ValueError)):
                 installer.install(package, home, upgrade=False)
             self.assertFalse((home / "plugins" / "my-journal").exists())
+            self.assertEqual(list(home.glob(".my-journal-stage-*")), [])
+            self.assertFalse((home / ".my-journal" / "install-transaction.json").exists())
+
+    def test_staged_fingerprint_base_exception_removes_pretransaction_stage(self):
+        installer = load_installer()
+
+        class SimulatedProcessDeath(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = self._home(Path(tmp))
+            with mock.patch.object(
+                installer, "_tree_sha256", side_effect=SimulatedProcessDeath()
+            ):
+                with self.assertRaises(SimulatedProcessDeath):
+                    installer.install(ROOT, home, upgrade=False)
+
+            self.assertEqual(list(home.glob(".my-journal-stage-*")), [])
+            self.assertFalse((home / ".my-journal" / "install-transaction.json").exists())
 
     def test_tree_fingerprint_does_not_follow_file_swapped_to_symlink(self):
         installer = load_installer()

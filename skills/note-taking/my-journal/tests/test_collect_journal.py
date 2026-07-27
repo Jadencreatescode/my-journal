@@ -176,6 +176,18 @@ class DiscoverDatabaseTests(unittest.TestCase):
                     end_ts=86400.0,
                 )
 
+    def test_profile_discovery_has_separate_filesystem_scan_ceiling(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            profiles = home / "profiles"
+            profiles.mkdir(parents=True)
+            for index in range(module.HARD_MAX_DISCOVERY_ENTRIES + 1):
+                (profiles / f"entry-{index:04d}").mkdir()
+
+            with self.assertRaisesRegex(module.CollectionLimitError, "discovery entry limit"):
+                module.discover_databases(home)
+
     def test_discovers_default_and_profile_databases(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -358,6 +370,77 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(manifest["sessions"][0]["platform"], "telegram")
             self.assertIsNone(manifest["sessions"][0]["chat_id"])
 
+    def test_rejects_two_million_character_raw_values_before_redaction(self):
+        module = load_module()
+        oversized = "Z" * 2_000_000
+        cases = (
+            ("content", "update messages set content = ? where id = 1"),
+            ("tool result", "update messages set role = 'tool', content = ? where id = 1"),
+            ("tool calls", "update messages set tool_calls = ? where id = 1"),
+            ("title", "update sessions set title = ? where id = 's1'"),
+            ("role", "update messages set role = ? where id = 1"),
+            ("platform", "update sessions set source = ? where id = 's1'"),
+            ("session identifier", "update sessions set id = ? where id = 's1'"),
+        )
+        for label, statement in cases:
+            with self.subTest(field=label), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                db = home / "state.db"
+                create_db(db)
+                with db_connection(db) as con:
+                    add_session(con, "s1", "discord", 100.0, "Bounded")
+                    add_message(con, 1, "s1", "user", "small", 110.0)
+                    con.execute(statement, (oversized,))
+                    if label == "session identifier":
+                        con.execute("update messages set session_id = ? where id = 1", (oversized,))
+
+                with mock.patch.object(
+                    module, "redact_sensitive", wraps=module.redact_sensitive
+                ) as redactor:
+                    with self.assertRaisesRegex(module.CollectionLimitError, "raw .* limit"):
+                        module.collect_range(home, 100.0, 200.0)
+
+                self.assertTrue(all(len(call.args[0]) < len(oversized) for call in redactor.call_args_list))
+
+    def test_rejects_oversized_text_message_identifier_before_integer_conversion(self):
+        module = load_module()
+        oversized = "7" * 2_000_000
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            db = home / "state.db"
+            create_db(db)
+            with db_connection(db) as con:
+                add_session(con, "s1", "discord", 100.0, "Bounded")
+                con.execute("drop table messages")
+                con.execute(
+                    """create table messages (
+                        id text, session_id text, role text, content text,
+                        timestamp real, tool_calls text, tool_name text
+                    )"""
+                )
+                con.execute(
+                    "insert into messages values (?, 's1', 'user', 'small', 110.0, null, null)",
+                    (oversized,),
+                )
+
+            with self.assertRaisesRegex(module.CollectionLimitError, "raw id limit"):
+                module.collect_range(home, 100.0, 200.0)
+
+    def test_rejects_oversized_database_before_sqlite_open(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            db = home / "state.db"
+            create_db(db)
+            with db.open("r+b") as stream:
+                stream.truncate(module.HARD_MAX_DATABASE_BYTES + 1)
+
+            with mock.patch.object(module.sqlite3, "connect") as connect:
+                with self.assertRaisesRegex(module.CollectionLimitError, "database byte limit"):
+                    module.collect_range(home, 100.0, 200.0)
+
+            connect.assert_not_called()
+
     def test_global_message_limit_aborts_collection(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -415,6 +498,28 @@ class CollectionTests(unittest.TestCase):
                     end_ts=200.0,
                     max_sessions=1,
                 )
+
+    def test_disallowed_profiles_do_not_consume_collection_database_limit(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            db = home / "state.db"
+            create_db(db)
+            with db_connection(db) as con:
+                add_session(con, "allowed", "discord", 100.0, "Allowed")
+                add_message(con, 1, "allowed", "user", "keep", 110.0)
+            for index in range(module.HARD_MAX_DATABASES):
+                create_db(home / "profiles" / f"blocked-{index:03d}" / "state.db")
+
+            manifest = module.collect_range(
+                home,
+                start_ts=100.0,
+                end_ts=200.0,
+                allowed_profiles={"default"},
+            )
+
+            self.assertEqual(manifest["coverage"]["database_count"], 1)
+            self.assertEqual([item["profile"] for item in manifest["databases"]], ["default"])
 
     def test_profile_allowlist_is_enforced_before_collection(self):
         module = load_module()
@@ -697,6 +802,42 @@ class CollectionTests(unittest.TestCase):
                 )
 
             self.assertFalse(output.exists())
+
+    def test_write_run_directory_creation_stays_anchored_after_output_root_swap(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            home.mkdir()
+            output = root / "journal"
+            output.mkdir()
+            external = root / "external"
+            external.mkdir()
+            moved = root / "journal-original"
+            real_mkdir = module.os.mkdir
+            swapped = False
+
+            def racing_mkdir(path, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if path == "evidence" and dir_fd is not None and not swapped:
+                    swapped = True
+                    output.rename(moved)
+                    output.symlink_to(external, target_is_directory=True)
+                return real_mkdir(path, mode, dir_fd=dir_fd)
+
+            with mock.patch.object(module.os, "mkdir", side_effect=racing_mkdir):
+                with self.assertRaisesRegex(ValueError, "symlink|unsafe"):
+                    module.write_run(
+                        home=home,
+                        output_dir=output,
+                        journal_date="1970-01-01",
+                        start_ts=0.0,
+                        end_ts=86400.0,
+                    )
+
+            self.assertTrue(swapped)
+            self.assertEqual(list(external.iterdir()), [])
+            self.assertTrue((moved / "evidence" / "1970" / "01").is_dir())
 
     def test_write_run_rejects_symlinked_output_subtree_without_artifacts(self):
         module = load_module()

@@ -12,6 +12,6 @@ The maintainer will acknowledge a complete report when practical, investigate im
 
 ## Security boundaries
 
-My Journal treats the Hermes home, journal root, package source, validator, SQLite databases, evidence, digests, canonical notes, and lifecycle metadata as trust boundaries. Descriptor anchored operations reduce symlink and path replacement races. Lifecycle metadata uses bounded no follow reads and durable atomic replacement. Install, restore, and uninstall use one advisory lock and recoverable transaction journals. Collection limits reduce denial of service exposure. Validation fails closed.
+My Journal treats the Hermes home, journal root, package source, validator, SQLite databases, evidence, digests, canonical notes, automation ownership, and lifecycle metadata as trust boundaries. Descriptor anchored operations reduce symlink and path replacement races. Lifecycle metadata uses bounded no follow reads and durable atomic replacement. Install, restore, uninstall, cron ownership, and purge use advisory locking and recoverable state. SQLite file size and raw field ceilings apply before redaction, followed by collection and output ceilings. Validation fails closed.
 
 Redaction is defense in depth. It is not a guarantee that arbitrary sensitive content cannot appear in evidence or model output.

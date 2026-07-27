@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import os
+import fcntl
 import sys
 import tempfile
 import unittest
@@ -44,6 +45,52 @@ class FakeContext:
 
 
 class PluginRegistrationTests(unittest.TestCase):
+    def test_cron_root_descriptor_lock_rejects_concurrent_owner(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        with tempfile.TemporaryDirectory() as tmp:
+            first = operations._open_directory(Path(tmp))
+            second = operations._open_directory(Path(tmp))
+            try:
+                fcntl.flock(first, fcntl.LOCK_EX)
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                fcntl.flock(first, fcntl.LOCK_UN)
+                os.close(second)
+                os.close(first)
+
+    def test_cron_reconciliation_matches_native_normalized_schedule_shape(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            operations, "journal_root", return_value=Path(tmp)
+        ), mock.patch.object(
+            operations, "_create_cron_job", return_value={"id": "native-job"}
+        ):
+            first = operations.schedule_create("0 11 * * *", "local")
+            intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
+            native_job = {
+                "id": "native-job",
+                **{key: value for key, value in intent["job_spec"].items() if key != "schedule"},
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "0 11 * * *",
+                    "display": "0 11 * * *",
+                },
+            }
+
+            with mock.patch.object(
+                operations, "_list_cron_jobs", return_value=[native_job]
+            ), mock.patch.object(operations, "_remove_cron_job", return_value=True) as remove:
+                repeated = operations.schedule_create("0 11 * * *", "local")
+                removed = operations.schedule_remove()
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(repeated["ok"])
+        self.assertTrue(repeated["existing"])
+        self.assertTrue(removed["ok"])
+        remove.assert_called_once_with("native-job")
     def test_failed_completion_restores_previous_note_and_state(self):
         plugin = load_plugin()
         tools = sys.modules[f"{plugin.__name__}.tools"]
@@ -354,40 +401,214 @@ class PluginRegistrationTests(unittest.TestCase):
     def test_cron_setup_uses_native_hermes_cron_and_persists_exact_job_id(self):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
-        listed = type(
-            "Completed", (),
-            {"returncode": 0, "stdout": "job_abc123  my-journal-daily\n", "stderr": ""},
-        )()
-        removed = type(
-            "Completed", (), {"returncode": 0, "stdout": "removed", "stderr": ""}
-        )()
-        with tempfile.TemporaryDirectory() as tmp:
-            previous = os.environ.get("MY_JOURNAL_ROOT")
-            os.environ["MY_JOURNAL_ROOT"] = tmp
-            try:
-                with mock.patch.object(
-                    operations, "_hermes_executable", return_value="/hermes"
-                ), mock.patch.object(
-                    operations, "_create_cron_job", return_value={"id": "job_abc123"}
-                ), mock.patch.object(
-                    operations.subprocess,
-                    "run",
-                    side_effect=[listed, removed],
-                ) as run:
-                    result = operations.schedule_create("0 11 * * *", "local")
-                    repeated = operations.schedule_create("0 11 * * *", "local")
-                    removal = operations.schedule_remove()
-            finally:
-                if previous is None:
-                    os.environ.pop("MY_JOURNAL_ROOT", None)
-                else:
-                    os.environ["MY_JOURNAL_ROOT"] = previous
+        token = "f" * 48
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
+        ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
+            operations, "_create_cron_job", return_value={"id": "job_abc123"}
+        ):
+            result = operations.schedule_create("0 11 * * *", "local")
+            intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
+            listed = [{"id": "job_abc123", **intent["job_spec"]}]
+            with mock.patch.object(
+                operations, "_list_cron_jobs", return_value=listed
+            ) as list_jobs, mock.patch.object(
+                operations, "_remove_cron_job", return_value=True
+            ) as remove_job:
+                repeated = operations.schedule_create("0 11 * * *", "local")
+                removal = operations.schedule_remove()
 
             self.assertEqual(result["job_id"], "job_abc123")
             self.assertTrue(repeated["existing"])
             self.assertEqual(removal["job_id"], "job_abc123")
-            self.assertEqual(run.call_args_list[1].args[0], ["/hermes", "cron", "remove", "job_abc123"])
+            self.assertEqual(list_jobs.call_args_list, [mock.call(include_disabled=True)] * 2)
+            remove_job.assert_called_once_with("job_abc123")
             self.assertFalse((Path(tmp) / "cron-job.json").exists())
+            self.assertFalse((Path(tmp) / "cron-job-intent.json").exists())
+
+    def test_cron_intent_is_durable_before_creation_and_name_contains_random_token(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        token = "a" * 48
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
+        ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
+            operations, "_list_cron_jobs", return_value=[]
+        ), mock.patch.object(operations, "_create_cron_job") as create:
+            def assert_intent_precedes_create(**kwargs):
+                intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
+                self.assertEqual(intent["ownership_token"], token)
+                self.assertEqual(intent["job_spec"], kwargs)
+                return {"id": "owned-id"}
+
+            create.side_effect = assert_intent_precedes_create
+            result = operations.schedule_create("0 11 * * *", "local")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(create.call_args.kwargs["name"], f"my-journal-daily-{token}")
+
+    def test_cron_recovery_uses_structured_exact_spec_not_id_or_name_substrings(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        token = "b" * 48
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
+        ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
+            operations, "_list_cron_jobs", return_value=[]
+        ), mock.patch.object(operations, "_create_cron_job", return_value={"id": "job-1"}):
+            first = operations.schedule_create("0 11 * * *", "local")
+            intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
+            exact = {"id": "job-1", **intent["job_spec"]}
+            adversary = {"id": "job-10", **intent["job_spec"], "schedule": "5 5 * * *"}
+            (Path(tmp) / "cron-job.json").unlink()
+            with mock.patch.object(
+                operations, "_list_cron_jobs", return_value=[adversary, exact]
+            ), mock.patch.object(operations, "_create_cron_job") as create:
+                recovered = operations.schedule_create("different", "different")
+
+        self.assertEqual(first["job_id"], "job-1")
+        self.assertEqual(recovered["job_id"], "job-1")
+        self.assertTrue(recovered["existing"])
+        create.assert_not_called()
+
+    def test_receipt_failure_rolls_back_and_interrupted_rollback_is_later_reconciled(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        token = "c" * 48
+        real_write = operations._write_descriptor_json
+        def fail_receipt(descriptor, name, value):
+            if name == "cron-job.json":
+                raise OSError("receipt fsync failed")
+            return real_write(descriptor, name, value)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
+        ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
+            operations, "_list_cron_jobs", return_value=[]
+        ), mock.patch.object(operations, "_create_cron_job", return_value={"id": "orphan"}), mock.patch.object(
+            operations, "_write_descriptor_json", side_effect=fail_receipt
+        ), mock.patch.object(operations, "_remove_cron_job", side_effect=OSError("crash during rollback")):
+            failed = operations.schedule_create("0 11 * * *", "local")
+
+            intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
+            orphan = {"id": "orphan", **intent["job_spec"]}
+            with mock.patch.object(operations, "_list_cron_jobs", return_value=[orphan]), mock.patch.object(
+                operations, "_remove_cron_job", return_value=True
+            ) as remove:
+                recovered = operations.schedule_remove()
+
+        self.assertFalse(failed["ok"])
+        self.assertTrue(recovered["ok"])
+        remove.assert_called_once_with("orphan")
+        self.assertFalse((Path(tmp) / "cron-job-intent.json").exists())
+
+    def test_receipt_without_ownership_intent_never_removes_arbitrary_job_id(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
+        ):
+            root = Path(tmp)
+            (root / "cron-job.json").write_text(json.dumps({
+                "schema_version": 1, "job_id": "victim-job"
+            }))
+            with mock.patch.object(operations, "_remove_cron_job") as remove:
+                result = operations.schedule_remove()
+
+            self.assertFalse(result["ok"])
+            remove.assert_not_called()
+            self.assertTrue((root / "cron-job.json").exists())
+
+    def test_native_false_cron_removal_preserves_ownership_records(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        token = "9" * 48
+        spec = operations._cron_job_spec("0 11 * * *", "local", token)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
+        ):
+            root = Path(tmp)
+            (root / "cron-job-intent.json").write_text(json.dumps({
+                "schema_version": 1, "ownership_token": token, "job_spec": spec,
+                "normalized_schedule": operations._normalize_cron_schedule("0 11 * * *"),
+            }))
+            (root / "cron-job.json").write_text(json.dumps({
+                "schema_version": 1, "job_id": "owned", "ownership_token": token, "job_spec": spec
+            }))
+            with mock.patch.object(
+                operations, "_list_cron_jobs", return_value=[{"id": "owned", **spec}]
+            ), mock.patch.object(operations, "_remove_cron_job", return_value=False):
+                result = operations.schedule_remove()
+
+            self.assertFalse(result["ok"])
+            self.assertTrue((root / "cron-job.json").exists())
+            self.assertTrue((root / "cron-job-intent.json").exists())
+
+    def test_purge_is_descriptor_anchored_across_root_swap_and_never_removes_replacement_job(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            root = parent / "journal"
+            old = parent / "old"
+            root.mkdir()
+            (root / "notes").mkdir()
+            spec = operations._cron_job_spec("0 1 * * *", "local", "d" * 48)
+            (root / "cron-job-intent.json").write_text(json.dumps({
+                "schema_version": 1, "ownership_token": "d" * 48, "job_spec": spec,
+                "normalized_schedule": operations._normalize_cron_schedule("0 1 * * *"),
+            }))
+            (root / "cron-job.json").write_text(json.dumps({
+                "schema_version": 1, "job_id": "old-job", "ownership_token": "d" * 48, "job_spec": spec
+            }))
+            replacement_spec = operations._cron_job_spec("0 2 * * *", "local", "e" * 48)
+
+            def swap_root(*, include_disabled):
+                root.rename(old)
+                root.mkdir()
+                (root / "cron-job-intent.json").write_text(json.dumps({
+                    "schema_version": 1, "ownership_token": "e" * 48, "job_spec": replacement_spec,
+                    "normalized_schedule": operations._normalize_cron_schedule("0 2 * * *"),
+                }))
+                (root / "cron-job.json").write_text(json.dumps({"job_id": "replacement-job"}))
+                return [
+                    {"id": "old-job", **spec},
+                    {"id": "replacement-job", **replacement_spec},
+                ]
+
+            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False), mock.patch.object(
+                operations, "_list_cron_jobs", side_effect=swap_root
+            ), mock.patch.object(operations, "_remove_cron_job", return_value=True) as remove:
+                result = operations.purge("DELETE MY JOURNAL DATA", apply=True)
+
+            self.assertEqual(remove.call_args_list, [mock.call("old-job")])
+            self.assertTrue((root / "cron-job.json").exists())
+            self.assertIn("notes", result["removed"])
+
+    def test_purge_preview_includes_only_strict_owned_atomic_temp_patterns(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        owned = {
+            ".cron-job.json." + "1" * 48 + ".tmp",
+            "cron-job-intent.json",
+            ".cron-job-intent.json." + "2" * 48 + ".tmp",
+            ".generation-0123456789abcdef.json." + "3" * 48 + ".tmp",
+        }
+        lookalikes = {
+            ".cron-job.json." + "1" * 47 + ".tmp",
+            ".generation-0123456789abcdef.json." + "g" * 48 + ".tmp",
+            "cron-job-intent.json.backup",
+            "generation-0123456789abcdef.json.tmp",
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
+        ):
+            for name in owned | lookalikes:
+                (Path(tmp) / name).write_text("{}")
+            result = operations.purge()
+
+        self.assertTrue(owned <= set(result["candidates"]))
+        self.assertTrue(lookalikes.isdisjoint(result["candidates"]))
 
     def test_registers_tools_and_cli_but_does_not_shadow_journal_skill(self):
         plugin = load_plugin()

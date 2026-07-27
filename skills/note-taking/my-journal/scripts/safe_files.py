@@ -32,6 +32,28 @@ def _open_directory(path: Path) -> int:
         raise
 
 
+def _open_or_create_directory(path: Path, mode: int) -> int:
+    """Open a directory path, creating missing components through held parents."""
+    anchor, parts = _absolute_parts(path)
+    descriptor = os.open(str(anchor), _DIRECTORY_FLAGS)
+    try:
+        for part in parts:
+            try:
+                next_descriptor = os.open(part, _DIRECTORY_FLAGS, dir_fd=descriptor)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, mode, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                next_descriptor = os.open(part, _DIRECTORY_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
 def _relative_target(root: Path, target: Path) -> tuple[Path, tuple[str, ...]]:
     root_absolute = root.expanduser().absolute()
     target_absolute = target.expanduser().absolute()
@@ -56,6 +78,35 @@ def _open_parent(root: Path, target: Path) -> tuple[int, str]:
     except Exception:
         os.close(descriptor)
         raise
+
+
+def safe_mkdir_tree(root: Path, target: Path, *, mode: int = 0o700) -> None:
+    """Create a directory tree below root using only held directory descriptors."""
+    if mode < 0 or mode > 0o777:
+        raise ValueError("invalid directory mode")
+    root_absolute, parts = _relative_target(root, target)
+    descriptor: int | None = None
+    try:
+        descriptor = _open_or_create_directory(root_absolute, mode)
+        for part in parts:
+            try:
+                next_descriptor = os.open(part, _DIRECTORY_FLAGS, dir_fd=descriptor)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, mode, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                next_descriptor = os.open(part, _DIRECTORY_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        os.fsync(descriptor)
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ValueError("directory path contains a symlink or unsafe component") from exc
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def safe_open_regular_fd(root: Path, target: Path) -> int:

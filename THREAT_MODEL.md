@@ -18,9 +18,9 @@
 
 ## Controls
 
-1. Descriptor anchored reads, writes, renames, and removals with symlink refusal.
-2. Read only SQLite access through an anchored file descriptor.
-3. Compiled collection and output ceilings that callers cannot raise.
+1. Descriptor anchored reads, directory creation, writes, renames, and removals with symlink refusal.
+2. Read only SQLite access through an anchored file descriptor, with a compiled database size ceiling and bounded SQL extraction before redaction.
+3. Compiled discovery, raw field, collection, and output ceilings that callers cannot raise.
 4. Mandatory secret redaction and declared privacy policy validation.
 5. Deterministic chunk identities and resumable digest receipts.
 6. Exact coverage validation before completion state is committed.
@@ -28,6 +28,7 @@
 8. Deterministic release archives built from a Git reference.
 9. Unattended generation receives only four dedicated journal generation tools. It has no terminal, web, general file, delegation, messaging, MCP, or unrelated plugin tools.
 10. Packet text is structurally labeled untrusted data. Canonical note and completion state replacement roll back together if final validation fails.
+11. Cron ownership intent is durably written before native job creation. Exact structured reconciliation, directory descriptor locking, and descriptor anchored purge prevent orphaned or misidentified automation.
 
 ## Outside scope
 

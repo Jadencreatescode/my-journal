@@ -19,6 +19,33 @@ def load_module():
 
 
 class SafeFileTests(unittest.TestCase):
+    def test_mkdir_tree_remains_anchored_when_output_root_is_swapped(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "journal"
+            root.mkdir()
+            external = base / "external"
+            external.mkdir()
+            moved = base / "journal-original"
+            real_mkdir = os.mkdir
+            swapped = False
+
+            def racing_mkdir(path, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if path == "evidence" and dir_fd is not None and not swapped:
+                    swapped = True
+                    root.rename(moved)
+                    root.symlink_to(external, target_is_directory=True)
+                return real_mkdir(path, mode, dir_fd=dir_fd)
+
+            with mock.patch.object(module.os, "mkdir", side_effect=racing_mkdir):
+                module.safe_mkdir_tree(root, root / "evidence" / "2026" / "07")
+
+            self.assertTrue(swapped)
+            self.assertTrue((moved / "evidence" / "2026" / "07").is_dir())
+            self.assertEqual(list(external.iterdir()), [])
+
     def test_unlink_removes_owned_regular_file_but_rejects_symlink(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

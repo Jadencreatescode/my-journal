@@ -38,6 +38,8 @@ hermes journal purge
 hermes journal purge --apply --confirm "DELETE MY JOURNAL DATA"
 ```
 
+`cron-setup` accepts recurring five field cron expressions or interval schedules. It writes durable ownership intent before creating the native Hermes job, then reconciles that exact structured job during repeated setup, removal, and purge.
+
 The plugin deliberately does not register `/journal`. A plugin slash command bypasses the model. The separately installed `journal` skill owns `/journal`, calls these tools, and produces grounded semantic summaries.
 
 ## Configuration

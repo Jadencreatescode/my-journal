@@ -6,7 +6,7 @@ My Journal reads only configured Hermes `state.db` files from explicitly allowed
 
 ## Data produced
 
-Private runtime data can include evidence manifests, packet chunks, digest receipts, generated Markdown notes, validation state, generation receipts, installer backups, and a persisted cron job identifier. These remain under the selected Hermes and journal roots.
+Private runtime data can include evidence manifests, packet chunks, digest receipts, generated Markdown notes, validation state, generation receipts, installer backups, and durable cron ownership intent and receipts. These remain under the selected Hermes and journal roots.
 
 ## Provider exposure
 
@@ -24,4 +24,4 @@ Known credential formats are redacted. Email and phone data are masked under the
 
 ## Deletion
 
-`hermes journal purge` previews owned journal data and automation receipts. Applying purge requires the exact confirmation phrase, disables the exact recorded Hermes cron job before deletion, removes generation receipts, and preserves `config.json`. If cron removal fails, journal data is preserved. Uninstall removes installed code while preserving journal data. Session databases are never purge targets.
+`hermes journal purge` previews owned journal data, automation ownership records, and strict crash residue patterns. Applying purge requires the exact confirmation phrase, reconciles and disables every exact owned Hermes cron job before deletion, removes generation receipts, and preserves `config.json`. If cron removal fails, journal data is preserved. Uninstall removes installed code while preserving journal data. Session databases are never purge targets.

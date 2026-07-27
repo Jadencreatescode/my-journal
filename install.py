@@ -515,17 +515,17 @@ def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
                 staged_source.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(source, staged_source, symlinks=True)
                 staged.append((staged_source, destination))
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
+            components: list[dict] = []
+            for staged_source, destination in staged:
+                relative = destination.relative_to(home)
+                backup_relative = relative.with_name(f"{relative.name}.backup-{stamp}") if _exists(destination) else None
+                components.append({"relative": relative, "destination": destination, "backup_relative": backup_relative, "backup": home / backup_relative if backup_relative else None, "staged": staged_source})
+            final_state = {"schema_version": 1, "components": [{"destination": item["relative"].as_posix(), "backup": item["backup_relative"].as_posix() if item["backup_relative"] else None, "installed_sha256": _tree_sha256(item["staged"])} for item in components]}
+            transaction = _transaction_payload("install", stage, home, components, previous_state, final_state)
         except BaseException:
             _remove_path(stage)
             raise
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
-        components: list[dict] = []
-        for staged_source, destination in staged:
-            relative = destination.relative_to(home)
-            backup_relative = relative.with_name(f"{relative.name}.backup-{stamp}") if _exists(destination) else None
-            components.append({"relative": relative, "destination": destination, "backup_relative": backup_relative, "backup": home / backup_relative if backup_relative else None, "staged": staged_source})
-        final_state = {"schema_version": 1, "components": [{"destination": item["relative"].as_posix(), "backup": item["backup_relative"].as_posix() if item["backup_relative"] else None, "installed_sha256": _tree_sha256(item["staged"])} for item in components]}
-        transaction = _transaction_payload("install", stage, home, components, previous_state, final_state)
         _write_transaction(home, transaction)
         try:
             for item in components:

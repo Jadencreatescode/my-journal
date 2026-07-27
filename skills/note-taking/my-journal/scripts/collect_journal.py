@@ -26,15 +26,20 @@ from atomic_files import atomic_write_text
 from evidence_identity import canonical_evidence_sha256
 from journal_config import load_config
 from secret_redaction import contains_likely_secret, redact_sensitive, redact_text
-from safe_files import descriptor_sqlite_uri, safe_open_regular_fd
+from safe_files import descriptor_sqlite_uri, safe_mkdir_tree, safe_open_regular_fd
 
 
 HARD_MAX_DATABASES = 128
-HARD_MAX_SELECTED_MESSAGES = 25_000
-HARD_MAX_SESSIONS = 2_000
+HARD_MAX_DISCOVERY_ENTRIES = 1_024
+HARD_MAX_DATABASE_BYTES = 1_073_741_824
+HARD_MAX_SELECTED_MESSAGES = 100_000
+HARD_MAX_SESSIONS = 10_000
 HARD_MAX_RETAINED_CHARS = 4_000_000
 HARD_MAX_MESSAGE_CHARS = 4_000
 HARD_MAX_TOOL_CHARS = 1_200
+HARD_MAX_RAW_BODY_CHARS = 1_000_000
+HARD_MAX_RAW_METADATA_CHARS = 16_384
+HARD_MAX_RAW_IDENTIFIER_CHARS = 4_096
 HARD_MAX_PACKET_CHUNK_BYTES = 120_000
 HARD_MAX_PACKET_CHUNKS = 64
 HARD_MAX_PACKET_TOTAL_BYTES = 8_000_000
@@ -88,11 +93,19 @@ def discover_databases(home: Path) -> list[DatabaseSource]:
     if profiles.is_symlink():
         return found
     if profiles.is_dir():
-        for path in sorted(profiles.glob("*/state.db")):
-            if path.is_symlink() or not path.is_file() or not _inside(path, home):
-                continue
-            found.append(DatabaseSource(path.parent.name, path))
-    return found
+        with os.scandir(profiles) as entries:
+            for scanned_count, entry in enumerate(entries, start=1):
+                if scanned_count > HARD_MAX_DISCOVERY_ENTRIES:
+                    raise CollectionLimitError(
+                        f"discovery entry limit exceeded: {HARD_MAX_DISCOVERY_ENTRIES}"
+                    )
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                path = profiles / entry.name / "state.db"
+                if path.is_symlink() or not path.is_file() or not _inside(path, home):
+                    continue
+                found.append(DatabaseSource(entry.name, path))
+    return sorted(found, key=lambda item: (item.profile, str(item.path)))
 
 
 def _columns(con: sqlite3.Connection, table: str) -> set[str]:
@@ -101,6 +114,20 @@ def _columns(con: sqlite3.Connection, table: str) -> set[str]:
 
 def _value(row: sqlite3.Row, name: str, default: Any = None) -> Any:
     return row[name] if name in row.keys() else default
+
+
+def _bounded_sql_text(column: str, alias: str, limit: int) -> str:
+    return (
+        f'substr(CAST({column} AS TEXT), 1, {limit + 1}) as "{alias}", '
+        f'length(CAST({column} AS TEXT)) as "__len_{alias}"'
+    )
+
+
+def _reject_oversized_raw_fields(row: sqlite3.Row, limits: dict[str, int]) -> None:
+    for field, limit in limits.items():
+        raw_length = _value(row, f"__len_{field}")
+        if raw_length is not None and int(raw_length) > limit:
+            raise CollectionLimitError(f"raw {field} limit exceeded: {limit}")
 
 
 def bound_text(
@@ -160,14 +187,17 @@ def collect_range(
     redaction_counts: Counter[str] = Counter()
     selected_session_count = 0
 
-    sources = discover_databases(home)
+    discovered_sources = discover_databases(home)
+    sources = [
+        source for source in discovered_sources
+        if allowed_profiles is None or source.profile in allowed_profiles
+    ]
     if len(sources) > HARD_MAX_DATABASES:
         raise CollectionLimitError(
-            f"database limit exceeded: {len(sources)} discovered, {HARD_MAX_DATABASES} allowed"
+            f"database limit exceeded: {len(sources)} allowed-profile databases, "
+            f"{HARD_MAX_DATABASES} allowed"
         )
     for source in sources:
-        if allowed_profiles is not None and source.profile not in allowed_profiles:
-            continue
         db_report: dict[str, Any] = {
             "profile": source.profile,
             "path": f"{source.profile}/state.db",
@@ -177,6 +207,12 @@ def collect_range(
         database_descriptor: int | None = None
         try:
             database_descriptor = safe_open_regular_fd(home, source.path)
+            database_size = os.fstat(database_descriptor).st_size
+            if database_size > HARD_MAX_DATABASE_BYTES:
+                raise CollectionLimitError(
+                    f"database byte limit exceeded: {database_size} bytes, "
+                    f"{HARD_MAX_DATABASE_BYTES} allowed"
+                )
             database_uri = descriptor_sqlite_uri(database_descriptor)
             con = sqlite3.connect(database_uri, uri=True)
             con.row_factory = sqlite3.Row
@@ -188,27 +224,81 @@ def collect_range(
                 raise RuntimeError("unsupported Hermes session database schema")
 
             optional_session_columns = ["title", "started_at", "chat_id", "thread_id", "display_name"]
-            optional_select = ", ".join(
-                f's."{name}" as "{name}"' if name in session_cols else f'NULL as "{name}"'
-                for name in optional_session_columns
-            )
+            raw_limits = {
+                "id": HARD_MAX_RAW_IDENTIFIER_CHARS,
+                "session_id": HARD_MAX_RAW_IDENTIFIER_CHARS,
+                "role": HARD_MAX_RAW_IDENTIFIER_CHARS,
+                "content": HARD_MAX_RAW_BODY_CHARS,
+                "timestamp": 128,
+                "tool_calls": HARD_MAX_RAW_BODY_CHARS,
+                "tool_name": HARD_MAX_RAW_METADATA_CHARS,
+                "source": HARD_MAX_RAW_IDENTIFIER_CHARS,
+                "title": HARD_MAX_RAW_METADATA_CHARS,
+                "started_at": 128,
+                "chat_id": HARD_MAX_RAW_IDENTIFIER_CHARS,
+                "thread_id": HARD_MAX_RAW_IDENTIFIER_CHARS,
+                "display_name": HARD_MAX_RAW_METADATA_CHARS,
+            }
+            select_fields = [
+                _bounded_sql_text("m.id", "id", raw_limits["id"]),
+                _bounded_sql_text("m.session_id", "session_id", raw_limits["session_id"]),
+                _bounded_sql_text("m.role", "role", raw_limits["role"]),
+                _bounded_sql_text("m.content", "content", raw_limits["content"]),
+                _bounded_sql_text("m.timestamp", "timestamp", raw_limits["timestamp"]),
+                (
+                    _bounded_sql_text("m.tool_calls", "tool_calls", raw_limits["tool_calls"])
+                    if "tool_calls" in message_cols else
+                    'NULL as "tool_calls", NULL as "__len_tool_calls"'
+                ),
+                (
+                    _bounded_sql_text("m.tool_name", "tool_name", raw_limits["tool_name"])
+                    if "tool_name" in message_cols else
+                    'NULL as "tool_name", NULL as "__len_tool_name"'
+                ),
+                _bounded_sql_text("s.source", "source", raw_limits["source"]),
+            ]
+            for name in optional_session_columns:
+                if name == "started_at":
+                    select_fields.append(
+                        _bounded_sql_text('s."started_at"', "started_at", raw_limits["started_at"])
+                        if name in session_cols
+                        else 'NULL as "started_at", NULL as "__len_started_at"'
+                    )
+                elif name in session_cols:
+                    select_fields.append(
+                        _bounded_sql_text(f's."{name}"', name, raw_limits[name])
+                    )
+                else:
+                    select_fields.append(
+                        f'NULL as "{name}", NULL as "__len_{name}"'
+                    )
+            where = ["m.timestamp >= ?", "m.timestamp < ?"]
+            parameters: list[Any] = [start_ts, end_ts]
+            if allowed_platforms is not None:
+                if not allowed_platforms:
+                    where.append("0")
+                else:
+                    values = sorted(allowed_platforms)
+                    where.append(f"s.source in ({','.join('?' for _ in values)})")
+                    parameters.extend(values)
+            if excluded_session_ids:
+                values = sorted(excluded_session_ids)
+                where.append(f"m.session_id not in ({','.join('?' for _ in values)})")
+                parameters.extend(values)
             rows = con.execute(
-                f"""select m.*, s.source, {optional_select}
+                f"""select {', '.join(select_fields)}
                    from messages m
                    join sessions s on s.id = m.session_id
-                   where m.timestamp >= ? and m.timestamp < ?
+                   where {' and '.join(where)}
                    order by m.session_id, m.timestamp, m.id""",
-                (start_ts, end_ts),
+                parameters,
             )
             grouped: dict[str, dict[str, Any]] = {}
             selected_in_database = 0
             for row in rows:
+                _reject_oversized_raw_fields(row, raw_limits)
                 platform = str(_value(row, "source", "unknown") or "unknown")
-                if allowed_platforms is not None and platform not in allowed_platforms:
-                    continue
                 session_id = str(_value(row, "session_id", ""))
-                if excluded_session_ids is not None and session_id in excluded_session_ids:
-                    continue
                 message_count += 1
                 selected_in_database += 1
                 if message_count > max_selected_messages:
@@ -232,7 +322,10 @@ def collect_range(
                             pii_mode=pii_mode, entropy_mode=entropy_mode,
                             finding_counts=redaction_counts,
                         ),
-                        "started_at": _value(row, "started_at"),
+                        "started_at": (
+                            float(_value(row, "started_at"))
+                            if _value(row, "started_at") is not None else None
+                        ),
                         "chat_id": _value(row, "chat_id"),
                         "thread_id": _value(row, "thread_id"),
                         "display_name": bound_text(
@@ -578,7 +671,7 @@ def write_run(
     packet_dir = output_dir / "packets" / year / month / f"{journal_date}-{run_id}"
     pending_dir = output_dir / "pending"
     for directory in (evidence_dir, packet_dir, pending_dir):
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        safe_mkdir_tree(output_dir, directory)
     manifest_path = evidence_dir / f"{journal_date}-{run_id}.json"
     packet_paths = [packet_dir / f"chunk-{index:06d}.md" for index in range(1, len(packet_chunks) + 1)]
     packet_plan_path = packet_dir / "plan.json"
