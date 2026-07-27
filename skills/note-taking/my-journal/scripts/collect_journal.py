@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import stat
 import sys
@@ -26,12 +27,14 @@ from atomic_files import atomic_write_text
 from evidence_identity import canonical_evidence_sha256
 from journal_config import load_config
 from secret_redaction import contains_likely_secret, redact_sensitive, redact_text
-from safe_files import descriptor_sqlite_uri, safe_mkdir_tree, safe_open_regular_fd
+from safe_files import descriptor_sqlite_uri, safe_mkdir_tree, safe_open_regular_fd, safe_read_text
 
 
 HARD_MAX_DATABASES = 128
 HARD_MAX_DISCOVERY_ENTRIES = 1_024
-HARD_MAX_DATABASE_BYTES = 1_073_741_824
+DEFAULT_MAX_DATABASE_BYTES = 8 * 1024**3
+DATABASE_APPROVAL_TIERS = {16 * 1024**3, 32 * 1024**3}
+HARD_MAX_DATABASE_BYTES = 32 * 1024**3
 HARD_MAX_SELECTED_MESSAGES = 100_000
 HARD_MAX_SESSIONS = 10_000
 HARD_MAX_RETAINED_CHARS = 4_000_000
@@ -44,6 +47,102 @@ HARD_MAX_PACKET_CHUNK_BYTES = 120_000
 HARD_MAX_PACKET_CHUNKS = 64
 HARD_MAX_PACKET_TOTAL_BYTES = 8_000_000
 HARD_MAX_MANIFEST_BYTES = 8_000_000
+
+
+def _database_confirmation(profile: str, tier: int) -> str:
+    token = hashlib.sha256(profile.encode("utf-8")).hexdigest()[:16]
+    return f"APPROVE MY JOURNAL DATABASE TIER {tier // 1024**3} GIB FOR PROFILE {token}"
+
+
+def _daily_confirmation(journal_date: str, tier: int) -> str:
+    return f"APPROVE MY JOURNAL DAILY TIER {tier} TRIGGERED BY DATE {journal_date}"
+
+
+def _plan_confirmation(plan: dict[str, Any]) -> str:
+    immutable = {
+        key: value for key, value in plan.items()
+        if key not in {"confirmation_phrase", "completed_dates", "config_activated"}
+    }
+    digest = hashlib.sha256(
+        json.dumps(immutable, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"ENABLE MY JOURNAL PLAN {plan['plan_id']} SHA256 {digest}"
+
+
+def _receipt_json(output: Path, name: str) -> dict[str, Any]:
+    try:
+        value = json.loads(safe_read_text(output, output / name, max_bytes=100_000))
+        if not isinstance(value, dict):
+            raise ValueError
+        return value
+    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ValueError(f"required approval receipt is missing or malformed: {name}") from exc
+
+
+def validate_capacity_receipts(output: Path, config: Any) -> None:
+    output = Path(output).expanduser().absolute()
+    database_approvals = dict(config.database_size_approvals)
+    if database_approvals:
+        receipt = _receipt_json(output, "database-size-approvals.json")
+        entries = receipt.get("approvals")
+        if receipt.get("schema_version") != 1 or not isinstance(entries, dict) or len(entries) > HARD_MAX_DATABASES:
+            raise ValueError("database size approval receipt is malformed")
+        validated: dict[str, int] = {}
+        for profile, entry in entries.items():
+            if not isinstance(profile, str) or not isinstance(entry, dict) or set(entry) != {
+                "approved_max_bytes", "confirmation_sha256",
+            }:
+                raise ValueError("database size approval receipt is malformed")
+            tier = entry["approved_max_bytes"]
+            expected = hashlib.sha256(_database_confirmation(profile, tier).encode("utf-8")).hexdigest()
+            if (
+                isinstance(tier, bool) or tier not in DATABASE_APPROVAL_TIERS
+                or entry["confirmation_sha256"] != expected
+            ):
+                raise ValueError("database size approval receipt is malformed")
+            validated[profile] = tier
+        if any(validated.get(profile) != tier for profile, tier in database_approvals.items()):
+            raise ValueError("configured database tier lacks matching durable approval evidence")
+
+    tier = config.max_selected_messages
+    if tier == 25_000:
+        return
+    receipt = _receipt_json(output, "daily-workload-approval.json")
+    if receipt.get("schema_version") != 1 or receipt.get("approved_tier") != tier:
+        raise ValueError("configured daily message tier lacks matching durable approval evidence")
+    if receipt.get("configuration_sha256") != config.daily_authorization_sha256():
+        raise ValueError("daily workload approval receipt does not match configured scope and policy")
+    kind = receipt.get("approval_kind")
+    confirmation_hash = receipt.get("confirmation_sha256")
+    if not isinstance(confirmation_hash, str) or re.fullmatch(r"[0-9a-f]{64}", confirmation_hash) is None:
+        raise ValueError("daily workload approval receipt is malformed")
+    if kind == "targeted_tier":
+        journal_date = receipt.get("journal_date")
+        if not isinstance(journal_date, str) or date.fromisoformat(journal_date).isoformat() != journal_date:
+            raise ValueError("daily workload approval receipt is malformed")
+        expected = hashlib.sha256(_daily_confirmation(journal_date, tier).encode("utf-8")).hexdigest()
+        if confirmation_hash != expected:
+            raise ValueError("daily workload approval receipt is malformed")
+    elif kind == "guided_setup":
+        plan_id = receipt.get("plan_id")
+        if not isinstance(plan_id, str) or re.fullmatch(r"[0-9a-f]{32}", plan_id) is None:
+            raise ValueError("daily workload approval receipt is malformed")
+        plan = _receipt_json(output, f"approval-plans/{plan_id}.json")
+        try:
+            valid_plan = (
+                plan.get("plan_id") == plan_id
+                and plan.get("confirmation_phrase") == _plan_confirmation(plan)
+                and plan.get("config_activated") is True
+                and plan.get("limits", {}).get("max_selected_messages") == tier
+                and hashlib.sha256(plan["confirmation_phrase"].encode("utf-8")).hexdigest()
+                == confirmation_hash
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            valid_plan = False
+        if not valid_plan:
+            raise ValueError("daily workload approval receipt does not match its guided setup plan")
+    else:
+        raise ValueError("daily workload approval receipt is malformed")
 
 
 @dataclass(frozen=True)
@@ -163,6 +262,7 @@ def collect_range(
     excluded_session_ids: set[str] | None = None,
     pii_mode: str = "preserve",
     entropy_mode: str = "off",
+    database_size_approvals: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Collect every session with messages in the half open timestamp range."""
     requested_limits = (
@@ -177,6 +277,15 @@ def collect_range(
             raise ValueError(f"{label} limit must be positive")
         if value > ceiling:
             raise ValueError(f"{label} limit exceeds compiled ceiling {ceiling}")
+    approvals = {} if database_size_approvals is None else database_size_approvals
+    if not isinstance(approvals, dict) or len(approvals) > HARD_MAX_DATABASES:
+        raise ValueError("database approvals exceed compiled database tier bounds")
+    for profile, tier in approvals.items():
+        if (
+            not isinstance(profile, str) or not profile.strip() or len(profile) > 512
+            or isinstance(tier, bool) or tier not in DATABASE_APPROVAL_TIERS
+        ):
+            raise ValueError("database approval exceeds compiled database tier bounds")
     sessions: list[dict[str, Any]] = []
     databases: list[dict[str, Any]] = []
     platforms: set[str] = set()
@@ -208,10 +317,11 @@ def collect_range(
         try:
             database_descriptor = safe_open_regular_fd(home, source.path)
             database_size = os.fstat(database_descriptor).st_size
-            if database_size > HARD_MAX_DATABASE_BYTES:
+            approved_limit = approvals.get(source.profile, DEFAULT_MAX_DATABASE_BYTES)
+            if database_size > approved_limit:
                 raise CollectionLimitError(
                     f"database byte limit exceeded: {database_size} bytes, "
-                    f"{HARD_MAX_DATABASE_BYTES} allowed"
+                    f"{approved_limit} approved for profile {source.profile}"
                 )
             database_uri = descriptor_sqlite_uri(database_descriptor)
             con = sqlite3.connect(database_uri, uri=True)
@@ -272,7 +382,10 @@ def collect_range(
                     select_fields.append(
                         f'NULL as "{name}", NULL as "__len_{name}"'
                     )
-            where = ["m.timestamp >= ?", "m.timestamp < ?"]
+            where = [
+                "m.timestamp >= ?", "m.timestamp < ?",
+                "lower(coalesce(m.role, '')) not in ('system', 'developer')",
+            ]
             parameters: list[Any] = [start_ts, end_ts]
             if allowed_platforms is not None:
                 if not allowed_platforms:
@@ -613,6 +726,7 @@ def write_run(
     excluded_session_ids: set[str] | None = None,
     pii_mode: str = "preserve",
     entropy_mode: str = "off",
+    database_size_approvals: dict[str, int] | None = None,
     policy_metadata: dict[str, Any] | None = None,
     allow_database_errors: bool = True,
     packet_chunk_chars: int = HARD_MAX_PACKET_CHUNK_BYTES,
@@ -639,6 +753,7 @@ def write_run(
         excluded_session_ids=excluded_session_ids,
         pii_mode=pii_mode,
         entropy_mode=entropy_mode,
+        database_size_approvals=database_size_approvals,
     )
     manifest["journal_date"] = journal_date
     manifest["timezone"] = timezone_name
@@ -804,6 +919,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(config_path)
         config.require_enabled()
+        validate_capacity_receipts(output, config)
         timezone_name = (
             os.getenv("MY_JOURNAL_TIMEZONE")
             or args.timezone
@@ -832,6 +948,7 @@ def main(argv: list[str] | None = None) -> int:
             excluded_session_ids=set(config.excluded_session_ids),
             pii_mode=config.pii_mode,
             entropy_mode=config.entropy_mode,
+            database_size_approvals=dict(config.database_size_approvals),
             policy_metadata=config.manifest_policy(),
             allow_database_errors=args.allow_database_errors,
             packet_chunk_chars=config.packet_chunk_bytes,

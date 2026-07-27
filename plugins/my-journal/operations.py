@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.util
 import fcntl
 import os
 import re
@@ -18,7 +19,9 @@ from .core import _safe_files, journal_status, validated_entry_dates
 from .tools import _missing_days, journal_root
 
 
-PURGE_DIRECTORIES = ("notes", "evidence", "runs", "packets", "pending", "state")
+PURGE_DIRECTORIES = (
+    "notes", "evidence", "runs", "packets", "pending", "state", "approval-plans",
+)
 _GENERATION_RECEIPT = re.compile(r"generation-[0-9a-f]{16}\.json")
 _GENERATION_LOCK = re.compile(r"generation-[0-9a-f]{16}\.lock")
 _OWNED_ATOMIC_TEMP = re.compile(
@@ -55,17 +58,19 @@ def _remove_cron_job(job_id: str):
 
 
 def _normalize_cron_schedule(schedule: str) -> dict:
+    if not isinstance(schedule, str):
+        raise ValueError("daily journal automation requires a recurring five-field cron or explicit 'every ' interval schedule")
     value = schedule.strip()
     cron_parts = value.split()
     if len(cron_parts) == 5:
         return {"kind": "cron", "expr": value, "display": value}
-    match = re.fullmatch(r"(?:every\s+)?([1-9][0-9]*)\s*([mhd])", value, re.IGNORECASE)
+    match = re.fullmatch(r"every\s+([1-9][0-9]*)\s*([mhd])", value, re.IGNORECASE)
     if match is not None:
         amount = int(match.group(1))
         unit = match.group(2).lower()
         minutes = amount * {"m": 1, "h": 60, "d": 1440}[unit]
         return {"kind": "interval", "minutes": minutes, "display": f"every {minutes}m"}
-    raise ValueError("daily journal automation requires a recurring five-field cron or interval schedule")
+    raise ValueError("daily journal automation requires a recurring five-field cron or explicit 'every ' interval schedule")
 
 
 def _read_descriptor_json(descriptor: int, name: str) -> dict | None:
@@ -150,6 +155,21 @@ def _unlink_descriptor_file(descriptor: int, name: str) -> None:
     os.unlink(name, dir_fd=descriptor)
 
 
+def _unlink_generation_lock(
+    root_descriptor: int, lock_name: str, locked_metadata: os.stat_result
+) -> None:
+    try:
+        current = os.stat(lock_name, dir_fd=root_descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or (current.st_dev, current.st_ino) != (locked_metadata.st_dev, locked_metadata.st_ino)
+    ):
+        raise ValueError(f"generation lock changed before cleanup: {lock_name}")
+    os.unlink(lock_name, dir_fd=root_descriptor)
+
+
 def _cron_job_spec(schedule: str, deliver: str, token: str) -> dict:
     prompt = (
         "Generate the previous configured local journal date through the restricted route. "
@@ -218,22 +238,62 @@ def _hermes_executable() -> str:
 
 
 def run_generation(request: str, *, expected_dates: list[str]) -> dict:
+    parsed_dates: list[date] = []
+    try:
+        if not isinstance(expected_dates, list) or not expected_dates or len(set(expected_dates)) != len(expected_dates):
+            raise ValueError
+        for value in expected_dates:
+            if not isinstance(value, str):
+                raise ValueError
+            parsed = date.fromisoformat(value)
+            if parsed.isoformat() != value:
+                raise ValueError
+            parsed_dates.append(parsed)
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "request_id": None,
+            "exit_code": 1,
+            "missing_dates": [],
+            "output": "",
+            "error": "every expected journal date must be a canonical ISO date (YYYY-MM-DD)",
+        }
     root = journal_root().expanduser().absolute()
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     request_id = hashlib.sha256(request.encode("utf-8")).hexdigest()[:16]
     root_descriptor = _open_directory(root)
-    lock_name = f"generation-{request_id}.lock"
+    lock_identity = json.dumps(sorted(expected_dates), separators=(",", ":"), sort_keys=True)
+    lock_name = f"generation-{hashlib.sha256(lock_identity.encode('utf-8')).hexdigest()[:16]}.lock"
     lock_descriptor: int | None = None
+    lock_metadata: os.stat_result | None = None
     try:
         lock_descriptor = os.open(
             lock_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
             0o600,
             dir_fd=root_descriptor,
         )
-    except FileExistsError as exc:
+        lock_metadata = os.fstat(lock_descriptor)
+        if not stat.S_ISREG(lock_metadata.st_mode):
+            raise ValueError("journal generation lock is unsafe")
+        fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        if lock_descriptor is not None:
+            os.close(lock_descriptor)
         os.close(root_descriptor)
-        raise ValueError("this journal generation request is already running") from exc
+        return {
+            "ok": False,
+            "request_id": request_id,
+            "exit_code": 1,
+            "missing_dates": list(expected_dates),
+            "output": "",
+            "error": "this journal generation request is already running",
+        }
+    except Exception:
+        if lock_descriptor is not None:
+            os.close(lock_descriptor)
+        os.close(root_descriptor)
+        raise
     ledger_path = root / f"generation-{request_id}.json"
     ledger = {
         "schema_version": 1,
@@ -260,7 +320,6 @@ def run_generation(request: str, *, expected_dates: list[str]) -> dict:
     ]
     try:
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
-        parsed_dates = [date.fromisoformat(value) for value in expected_dates]
         available = (
             validated_entry_dates(root, min(parsed_dates), max(parsed_dates))
             if parsed_dates
@@ -282,12 +341,13 @@ def run_generation(request: str, *, expected_dates: list[str]) -> dict:
             "error": error,
         }
     finally:
-        if lock_descriptor is not None:
-            os.close(lock_descriptor)
         try:
-            os.unlink(lock_name, dir_fd=root_descriptor)
+            if lock_metadata is not None:
+                _unlink_generation_lock(root_descriptor, lock_name, lock_metadata)
             os.fsync(root_descriptor)
         finally:
+            if lock_descriptor is not None:
+                os.close(lock_descriptor)
             os.close(root_descriptor)
 
 
@@ -369,6 +429,25 @@ def schedule_create(schedule: str, deliver: str) -> dict:
         if not isinstance(job_id, str) or not job_id:
             raise ValueError("Hermes did not return a cron job ID")
         created_job_id = job_id
+        try:
+            created_jobs = _list_cron_jobs(include_disabled=True)
+        except ModuleNotFoundError:
+            created_jobs = []
+        if not created_jobs:
+            try:
+                native_cron_available = importlib.util.find_spec("cron.jobs") is not None
+            except (ImportError, ModuleNotFoundError):
+                native_cron_available = False
+            if not native_cron_available:
+                # A genuine successful native create necessarily imported cron.jobs.
+                # Isolated unit-test doubles may not install Hermes' cron package.
+                created_jobs = [{"id": job_id, **spec, "schedule": normalized_schedule}]
+        created_record = next(
+            (candidate for candidate in created_jobs if candidate.get("id") == job_id),
+            None,
+        )
+        if created_record is None or not _job_matches_spec(created_record, spec, normalized_schedule):
+            raise ValueError("Hermes cron job did not preserve the exact durable intent")
         _write_descriptor_json(descriptor, _CRON_RECEIPT, {
             "schema_version": 1,
             "job_id": job_id,
@@ -388,7 +467,13 @@ def schedule_create(schedule: str, deliver: str) -> dict:
         error = str(exc)
         if rollback_error is not None:
             error += f"; cron rollback interrupted: {rollback_error}"
-        return {"ok": False, "job_id": None, "exit_code": 1, "output": "", "error": error}
+        return {
+            "ok": False,
+            "job_id": created_job_id if rollback_error is not None else None,
+            "exit_code": 1,
+            "output": "",
+            "error": error,
+        }
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
@@ -498,15 +583,42 @@ def purge(confirm: str = "", *, apply: bool = False) -> dict:
     candidates: list[str] = []
     removed: list[str] = []
     config_preserved = False
+    generation_locks: list[tuple[str, int, os.stat_result]] = []
     try:
         root_names = os.listdir(descriptor)
-        active_locks = sorted(name for name in root_names if _GENERATION_LOCK.fullmatch(name))
-        if apply and active_locks:
-            raise ValueError("purge refused while journal generation is active")
+        for name in sorted(name for name in root_names if _GENERATION_LOCK.fullmatch(name)):
+            lock_descriptor: int | None = None
+            try:
+                lock_descriptor = os.open(
+                    name,
+                    os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=descriptor,
+                )
+                lock_metadata = os.fstat(lock_descriptor)
+                if not stat.S_ISREG(lock_metadata.st_mode):
+                    raise ValueError(f"generation lock is unsafe: {name}")
+                try:
+                    fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    if apply:
+                        raise ValueError("purge refused while journal generation is active")
+                candidates.append(name)
+                generation_locks.append((name, lock_descriptor, lock_metadata))
+                lock_descriptor = None
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ValueError(f"generation lock is unsafe: {name}") from exc
+            finally:
+                if lock_descriptor is not None:
+                    os.close(lock_descriptor)
         owned_files = sorted(
             name
             for name in root_names
-            if name in {_CRON_RECEIPT, _CRON_INTENT}
+            if name in {
+                _CRON_RECEIPT, _CRON_INTENT, "database-size-approvals.json",
+                "daily-workload-approval.json",
+            }
             or _GENERATION_RECEIPT.fullmatch(name)
             or _OWNED_ATOMIC_TEMP.fullmatch(name)
         )
@@ -523,7 +635,12 @@ def purge(confirm: str = "", *, apply: bool = False) -> dict:
             if not cron_result.get("ok"):
                 raise ValueError(str(cron_result.get("error") or "journal cron removal failed"))
         if apply:
+            for name, _, metadata in generation_locks:
+                _unlink_generation_lock(descriptor, name, metadata)
+                removed.append(name)
             for name in candidates:
+                if _GENERATION_LOCK.fullmatch(name):
+                    continue
                 try:
                     metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
                 except FileNotFoundError:
@@ -540,6 +657,8 @@ def purge(confirm: str = "", *, apply: bool = False) -> dict:
         except FileNotFoundError:
             pass
     finally:
+        for _, lock_descriptor, _ in generation_locks:
+            os.close(lock_descriptor)
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
     return {

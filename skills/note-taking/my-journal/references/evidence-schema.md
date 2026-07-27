@@ -13,7 +13,7 @@ The evidence manifest is a private, bounded record used to generate and verify o
 5. `created_at`: UTC creation timestamp.
 6. `window`: Half open UTC timestamp range.
 7. `coverage`: Database, session, message, platform, and profile counts.
-8. `databases`: One status record for every discovered database.
+8. `databases`: One status record for every selected authorized database.
 9. `sessions`: One record for every selected session.
 
 ## Session Fields

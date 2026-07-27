@@ -11,7 +11,7 @@ Initial public alpha of the evidence backed activity journal for Hermes.
 3. Bounded evidence chunks and resumable digest receipts.
 4. Credential redaction, PII masking, and nonreversible public coverage references.
 5. Evidence validated Markdown notes.
-6. Conversational journal skill, five deterministic tools, and the `hermes journal` CLI.
+6. Conversational journal skill, 11 deterministic journal tools, four restricted generation tools, and the `hermes journal` CLI.
 7. Transactional installation, restore, uninstall, and interrupted activation recovery.
 
 ### Known limitations

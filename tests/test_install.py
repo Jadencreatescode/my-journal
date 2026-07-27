@@ -378,6 +378,70 @@ class InstallerHardeningRegressionTests(unittest.TestCase):
             self.assertEqual(list(home.glob(".my-journal-stage-*")), [])
             self.assertFalse((home / ".my-journal" / "install-transaction.json").exists())
 
+    def test_install_transaction_persistence_failure_cleans_only_new_stage(self):
+        installer = load_installer()
+
+        class SimulatedProcessDeath(BaseException):
+            pass
+
+        for failure in (OSError("transaction write failed"), SimulatedProcessDeath()):
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                home = self._home(root)
+                external = root / "external"
+                external.mkdir()
+                keep = external / "keep.txt"
+                keep.write_text("keep", encoding="utf-8")
+                self._write_existing_components(installer, home)
+                before = {
+                    target: installer._tree_sha256(home / target)
+                    for _, target in installer.COMPONENTS
+                }
+
+                with mock.patch.object(installer, "_write_transaction", side_effect=failure):
+                    with self.assertRaises(type(failure)):
+                        installer.install(ROOT, home, upgrade=True)
+
+                for _, target in installer.COMPONENTS:
+                    self.assertEqual(installer._tree_sha256(home / target), before[target])
+                self.assertEqual(keep.read_text(encoding="utf-8"), "keep")
+                self.assertEqual(list(home.glob(".my-journal-stage-*")), [])
+                metadata = home / ".my-journal"
+                self.assertFalse((metadata / "install-transaction.json").exists())
+                self.assertEqual(list(metadata.glob(".install-transaction.*.tmp")), [])
+                self.assertFalse((metadata / "install-state.json").exists())
+
+    def test_transaction_persistence_exception_preserves_durable_recovery_record(self):
+        installer = load_installer()
+
+        class SimulatedProcessDeath(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = self._home(Path(tmp))
+            stage = installer._new_stage(home, "stage")
+            relative = installer.COMPONENTS[0][1]
+            components = [{"relative": relative, "backup_relative": None}]
+            transaction = installer._transaction_payload(
+                "install", stage, home, components, None,
+                {"schema_version": 1, "components": []},
+            )
+            real_write = installer._write_transaction
+
+            def persist_then_die(target_home, payload):
+                real_write(target_home, payload)
+                raise SimulatedProcessDeath()
+
+            with mock.patch.object(installer, "_write_transaction", side_effect=persist_then_die):
+                with self.assertRaises(SimulatedProcessDeath):
+                    installer._persist_transaction(home, stage, transaction)
+
+            self.assertTrue(stage.is_dir())
+            self.assertTrue((home / ".my-journal" / "install-transaction.json").is_file())
+            installer.recover(home)
+            self.assertFalse(stage.exists())
+            self.assertFalse((home / ".my-journal" / "install-transaction.json").exists())
+
     def test_tree_fingerprint_does_not_follow_file_swapped_to_symlink(self):
         installer = load_installer()
         with tempfile.TemporaryDirectory() as tmp:
@@ -495,6 +559,53 @@ class InstallerHardeningRegressionTests(unittest.TestCase):
                 installer.restore(home)
             restored = installer.restore(home, force=True)
             self.assertEqual(len(restored), len(installer.COMPONENTS))
+
+    def test_restore_transaction_persistence_failure_leaves_install_unchanged(self):
+        installer = load_installer()
+
+        class SimulatedProcessDeath(BaseException):
+            pass
+
+        for failure in (OSError("transaction write failed"), SimulatedProcessDeath()):
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                home = self._home(root)
+                external = root / "external"
+                external.mkdir()
+                keep = external / "keep.txt"
+                keep.write_text("keep", encoding="utf-8")
+                self._write_existing_components(installer, home)
+                installer.install(ROOT, home, upgrade=True)
+                state_path = home / ".my-journal" / "install-state.json"
+                state_before = state_path.read_bytes()
+                components_before = {
+                    target: installer._tree_sha256(home / target)
+                    for _, target in installer.COMPONENTS
+                }
+                backups_before = {
+                    path.relative_to(home): installer._tree_sha256(path)
+                    for path in home.rglob("*.backup-*")
+                }
+
+                with mock.patch.object(installer, "_write_transaction", side_effect=failure):
+                    with self.assertRaises(type(failure)):
+                        installer.restore(home)
+
+                self.assertEqual(state_path.read_bytes(), state_before)
+                for _, target in installer.COMPONENTS:
+                    self.assertEqual(installer._tree_sha256(home / target), components_before[target])
+                self.assertEqual(
+                    {
+                        path.relative_to(home): installer._tree_sha256(path)
+                        for path in home.rglob("*.backup-*")
+                    },
+                    backups_before,
+                )
+                self.assertEqual(keep.read_text(encoding="utf-8"), "keep")
+                self.assertEqual(list(home.glob(".my-journal-restore-*")), [])
+                metadata = home / ".my-journal"
+                self.assertFalse((metadata / "install-transaction.json").exists())
+                self.assertEqual(list(metadata.glob(".install-transaction.*.tmp")), [])
 
     def test_cli_force_is_valid_with_restore(self):
         installer = load_installer()
@@ -670,6 +781,41 @@ class InstallerHardeningRegressionTests(unittest.TestCase):
             self.assertTrue((home / ".my-journal" / "install-transaction.json").exists())
             installer.recover(home)
             self.assertFalse((home / ".my-journal" / "install-transaction.json").exists())
+
+    def test_uninstall_transaction_persistence_failure_leaves_install_unchanged(self):
+        installer = load_installer()
+
+        class SimulatedProcessDeath(BaseException):
+            pass
+
+        for failure in (OSError("transaction write failed"), SimulatedProcessDeath()):
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                home = self._home(root)
+                external = root / "external"
+                external.mkdir()
+                keep = external / "keep.txt"
+                keep.write_text("keep", encoding="utf-8")
+                installer.install(ROOT, home, upgrade=False)
+                state_path = home / ".my-journal" / "install-state.json"
+                state_before = state_path.read_bytes()
+                components_before = {
+                    target: installer._tree_sha256(home / target)
+                    for _, target in installer.COMPONENTS
+                }
+
+                with mock.patch.object(installer, "_write_transaction", side_effect=failure):
+                    with self.assertRaises(type(failure)):
+                        installer.uninstall(home)
+
+                self.assertEqual(state_path.read_bytes(), state_before)
+                for _, target in installer.COMPONENTS:
+                    self.assertEqual(installer._tree_sha256(home / target), components_before[target])
+                self.assertEqual(keep.read_text(encoding="utf-8"), "keep")
+                self.assertEqual(list(home.glob(".my-journal-uninstall-*")), [])
+                metadata = home / ".my-journal"
+                self.assertFalse((metadata / "install-transaction.json").exists())
+                self.assertEqual(list(metadata.glob(".install-transaction.*.tmp")), [])
 
     def test_restore_success_keeps_managed_state_for_later_uninstall(self):
         installer = load_installer()

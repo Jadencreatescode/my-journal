@@ -213,6 +213,29 @@ def _write_transaction(hermes_home: Path, payload: dict) -> None:
     _atomic_json(hermes_home, _TRANSACTION, payload)
 
 
+def _persist_transaction(hermes_home: Path, stage: Path, payload: dict) -> None:
+    try:
+        _write_transaction(hermes_home, payload)
+    except BaseException:
+        try:
+            directory_fd = _metadata_descriptor(hermes_home, create=False)
+        except FileNotFoundError:
+            durable = False
+        else:
+            try:
+                try:
+                    os.stat(_TRANSACTION, dir_fd=directory_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    durable = False
+                else:
+                    durable = True
+            finally:
+                os.close(directory_fd)
+        if not durable:
+            _remove_path(stage)
+        raise
+
+
 def _read_json(hermes_home: Path, name: str, *, missing_message: str) -> dict:
     if name not in {_STATE, _TRANSACTION}:
         raise ValueError("unexpected metadata source")
@@ -526,7 +549,7 @@ def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
         except BaseException:
             _remove_path(stage)
             raise
-        _write_transaction(home, transaction)
+        _persist_transaction(home, stage, transaction)
         try:
             for item in components:
                 item["destination"].parent.mkdir(parents=True, exist_ok=True)
@@ -567,7 +590,7 @@ def restore(hermes_home: Path, *, force: bool = False) -> list[str]:
             final_state = {"schema_version": 1, "components": [{"destination": item["relative"].as_posix(), "backup": None, "installed_sha256": _tree_sha256(item["backup"])} for item in managed]}
         stage = _new_stage(home, "restore")
         transaction = _transaction_payload("restore", stage, home, components, state, final_state)
-        _write_transaction(home, transaction)
+        _persist_transaction(home, stage, transaction)
         try:
             for item in components:
                 staged = stage / item["relative"]
@@ -600,7 +623,7 @@ def uninstall(hermes_home: Path, *, force: bool = False) -> list[str]:
                 raise ValueError(f"installed component was modified: {item['destination']}")
         stage = _new_stage(home, "uninstall")
         transaction = _transaction_payload("uninstall", stage, home, components, state)
-        _write_transaction(home, transaction)
+        _persist_transaction(home, stage, transaction)
         try:
             for item in components:
                 if not _exists(item["destination"]):

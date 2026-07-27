@@ -39,6 +39,9 @@ def create_repo(root: Path) -> str:
         "install.py": "print('fixture')\n",
         "plugins/my-journal/plugin.yaml": "version: 0.1.0-alpha.1\n",
         "plugins/my-journal/__init__.py": "VALUE = 1\n",
+        "plugins/my-journal/onboarding.py": "VALUE = 1\n",
+        "plugins/my-journal/tests/test_onboarding.py": "# onboarding tests\n",
+        "plugins/my-journal/tests/test_runtime_hardening.py": "# runtime tests\n",
         "skills/note-taking/my-journal/SKILL.md": "# Evidence skill\n",
         "skills/note-taking/journal/SKILL.md": "# Journal skill\n",
     }
@@ -52,6 +55,18 @@ def create_repo(root: Path) -> str:
 
 
 class ReleaseToolTests(unittest.TestCase):
+    def test_verifier_requires_guided_setup_runtime_and_tests(self):
+        verifier = load_script("verify_release")
+        self.assertIn("plugins/my-journal/onboarding.py", verifier.REQUIRED_RELEASE_FILES)
+        self.assertIn(
+            "plugins/my-journal/tests/test_onboarding.py",
+            verifier.REQUIRED_RELEASE_FILES,
+        )
+        self.assertIn(
+            "plugins/my-journal/tests/test_runtime_hardening.py",
+            verifier.REQUIRED_RELEASE_FILES,
+        )
+
     def test_git_tracks_every_required_installer_component(self):
         worktree = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],

@@ -426,20 +426,52 @@ class CollectionTests(unittest.TestCase):
             with self.assertRaisesRegex(module.CollectionLimitError, "raw id limit"):
                 module.collect_range(home, 100.0, 200.0)
 
-    def test_rejects_oversized_database_before_sqlite_open(self):
+    def test_rejects_database_above_default_tier_before_sqlite_open(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             db = home / "state.db"
             create_db(db)
             with db.open("r+b") as stream:
-                stream.truncate(module.HARD_MAX_DATABASE_BYTES + 1)
+                stream.truncate(module.DEFAULT_MAX_DATABASE_BYTES + 1)
 
             with mock.patch.object(module.sqlite3, "connect") as connect:
                 with self.assertRaisesRegex(module.CollectionLimitError, "database byte limit"):
                     module.collect_range(home, 100.0, 200.0)
 
             connect.assert_not_called()
+
+    def test_profile_approval_allows_next_tier_but_growth_and_hard_max_fail_closed(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            db = home / "state.db"
+            create_db(db)
+            with db.open("r+b") as stream:
+                stream.truncate(8 * 1024**3 + 4096)
+            with mock.patch.object(module.sqlite3, "connect", side_effect=RuntimeError("opened")) as connect:
+                manifest = module.collect_range(
+                    home, 100.0, 200.0,
+                    database_size_approvals={"default": 16 * 1024**3},
+                )
+            connect.assert_called_once()
+            self.assertEqual(manifest["coverage"]["database_error_count"], 1)
+
+            with db.open("r+b") as stream:
+                stream.truncate(16 * 1024**3 + 4096)
+            with mock.patch.object(module.sqlite3, "connect") as connect:
+                with self.assertRaisesRegex(module.CollectionLimitError, "database byte limit"):
+                    module.collect_range(
+                        home, 100.0, 200.0,
+                        database_size_approvals={"default": 16 * 1024**3},
+                    )
+            connect.assert_not_called()
+
+            with self.assertRaisesRegex(ValueError, "compiled database tier"):
+                module.collect_range(
+                    home, 100.0, 200.0,
+                    database_size_approvals={"default": 64 * 1024**3},
+                )
 
     def test_global_message_limit_aborts_collection(self):
         module = load_module()
@@ -459,6 +491,22 @@ class CollectionTests(unittest.TestCase):
                     end_ts=200.0,
                     max_selected_messages=2,
                 )
+
+    def test_system_and_developer_rows_do_not_consume_selected_message_limit(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            db = home / "state.db"
+            create_db(db)
+            with db_connection(db) as con:
+                add_session(con, "s1", "discord", 100.0, "Roles")
+                add_message(con, 1, "s1", "system", "hidden", 101.0)
+                add_message(con, 2, "s1", "developer", "hidden", 102.0)
+                add_message(con, 3, "s1", "user", "eligible", 103.0)
+            manifest = module.collect_range(
+                home, start_ts=100.0, end_ts=200.0, max_selected_messages=1,
+            )
+            self.assertEqual(manifest["coverage"]["message_count"], 1)
 
     def test_global_retained_character_limit_aborts_collection(self):
         module = load_module()
@@ -700,7 +748,7 @@ class CollectionTests(unittest.TestCase):
             self.assertIn("[REDACTED]", combined)
             tool = next(item for item in messages if item["role"] == "tool")
             self.assertLessEqual(len(tool["content"]), 90)
-            self.assertEqual(manifest["coverage"]["message_count"], 4)
+            self.assertEqual(manifest["coverage"]["message_count"], 3)
             self.assertEqual(manifest["coverage"]["retained_message_count"], 3)
 
     def test_write_run_records_timezone_and_exact_local_day_window(self):

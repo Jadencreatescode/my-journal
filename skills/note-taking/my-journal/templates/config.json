@@ -5,6 +5,7 @@
   "profiles": [],
   "platforms": [],
   "excluded_session_ids": [],
+  "database_size_approvals": {},
   "privacy": {
     "redact_secrets": true,
     "pii_mode": "mask",

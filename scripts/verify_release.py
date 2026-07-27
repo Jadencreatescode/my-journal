@@ -17,6 +17,9 @@ REQUIRED_RELEASE_FILES = {
     "install.py",
     "plugins/my-journal/plugin.yaml",
     "plugins/my-journal/__init__.py",
+    "plugins/my-journal/onboarding.py",
+    "plugins/my-journal/tests/test_onboarding.py",
+    "plugins/my-journal/tests/test_runtime_hardening.py",
     "skills/note-taking/my-journal/SKILL.md",
     "skills/note-taking/journal/SKILL.md",
 }

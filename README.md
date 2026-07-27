@@ -2,7 +2,7 @@
 
 **The evidence backed activity journal for Hermes.**
 
-My Journal `0.1.0-alpha.1` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, five deterministic read tools, four restricted generation tools, and the scriptable `hermes journal` command family.
+My Journal `0.1.0-alpha.1` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines guided first use, bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, 11 deterministic journal tools, four restricted generation tools, and the scriptable `hermes journal` command family.
 
 This is an alpha. Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` before enabling collection.
 
@@ -10,7 +10,7 @@ This is an alpha. Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` befo
 
 1. `skills/note-taking/my-journal` owns collection, evidence, privacy controls, digest receipts, validation, and note templates.
 2. `skills/note-taking/journal` owns conversational journal requests.
-3. `plugins/my-journal` owns five deterministic tools and `hermes journal`.
+3. `plugins/my-journal` owns 11 deterministic journal tools, four restricted generation tools, and `hermes journal`.
 4. `install.py` owns transactional installation, restore, uninstall, and interrupted activation recovery.
 
 Markdown under `journal/notes/YYYY/MM/YYYY-MM-DD.md` is canonical. Semantic stores are optional mirrors.
@@ -48,9 +48,41 @@ hermes journal status
 hermes journal resolve-range "last 7 days"
 ```
 
+## Guided first use
+
+Start with metadata inventory. This lists available profile and platform labels without reading message bodies:
+
+```text
+hermes journal setup-inventory
+```
+
+Databases up to 8 GiB use the normal tier. Inventory stops before opening a larger database and reports an exact approval phrase for the smallest sufficient 16 GiB or 32 GiB tier. Approve that profile tier, then repeat inventory:
+
+```text
+hermes journal setup-database-approve PROFILE --confirm "EXACT PHRASE"
+```
+
+Databases above 32 GiB remain blocked and require a separately reviewed bounded sharding or indexing procedure.
+
+Create a read only approval plan with explicit scope, timezone, and privacy choices:
+
+```text
+hermes journal setup-plan --profile default --platform discord --timezone America/Los_Angeles --pii-mode mask --entropy-mode report
+```
+
+The planner scans eligible timestamps only, finds the earliest and latest eligible local activity dates, reports exact activity dates and workload, selects the smallest sufficient daily message tier from 25,000, 50,000, and 100,000, subtracts already validated notes, and writes an immutable random-ID plan. Optional `--start-date`, `--end-date`, and repeated `--exclude-session` arguments narrow the proposal. Persistent Hermes memory does not determine the historical start date.
+
+Review the complete output. Approval requires the exact generated phrase:
+
+```text
+hermes journal setup-approve PLAN_ID --confirm "EXACT GENERATED PHRASE"
+```
+
+Approval rechecks retained source metadata, writes the enabled configuration, and generates only approved missing activity dates, oldest first. Completed and failed dates are reported separately. Repeating a partial approval retries only unfinished dates. Native daily scheduling is offered only after every approved date succeeds and is never enabled automatically.
+
 ## Explicit configuration
 
-Copy `skills/note-taking/my-journal/templates/config.json` to `journal/config.json` under the Hermes home. The shipped configuration has `enabled` set to `false`.
+Guided approval creates `journal/config.json`. Manual operators may instead copy `skills/note-taking/my-journal/templates/config.json` to that location. The shipped manual template has `enabled` set to `false`.
 
 A valid enabled configuration must explicitly name at least one profile and platform:
 
@@ -62,6 +94,7 @@ A valid enabled configuration must explicitly name at least one profile and plat
   "profiles": ["default"],
   "platforms": ["cli"],
   "excluded_session_ids": [],
+  "database_size_approvals": {},
   "privacy": {
     "redact_secrets": true,
     "pii_mode": "mask",
@@ -79,7 +112,22 @@ A valid enabled configuration must explicitly name at least one profile and plat
 }
 ```
 
-Callers may lower compiled ceilings but cannot raise them. Secret redaction cannot be disabled.
+The guided planner may select 25,000, 50,000, or 100,000 selected messages per activity date. Configuration cannot exceed the absolute 100,000 ceiling. Secret redaction cannot be disabled.
+
+If a later date outgrows the approved daily tier, generation stops before collector launch and returns the exact next tier and confirmation phrase. Check and approve only that capacity change, then retry the same date:
+
+```text
+hermes journal workload-check 2026-07-27
+hermes journal workload-approve 2026-07-27 --confirm "EXACT PHRASE"
+```
+
+The blocked date triggers the approval, but the approved 50,000 or 100,000 tier becomes the global daily capacity for future dates too. It does not authorize only the triggering date. The targeted property means only daily capacity changes; profiles, platforms, exclusions, timezone, privacy, database limits, and all other resource ceilings remain unchanged.
+
+Configured higher tiers are not sufficient by themselves. Collection validates matching descriptor anchored database and daily approval receipts before SQLite opens. Purge preserves `config.json` but removes those receipts, so higher tiers fail closed until the corresponding database or workload check is repeated and its exact phrase is approved again.
+
+Approval publication is retry safe. If durable evidence is written but configuration publication is interrupted, repeating the same exact database or daily phrase completes the missing configuration update instead of requiring a wider approval.
+
+Daily workload tiers never increase silently. A date above 100,000 eligible messages remains blocked for a separately reviewed bounded strategy.
 
 Timezone precedence is:
 
@@ -98,6 +146,7 @@ hermes journal backfill-plan "last 30 days"
 hermes journal preview "last 30 days"
 hermes journal resolve-range "last month"
 hermes journal maintenance
+hermes journal setup-inventory
 ```
 
 Generation commands use Hermes with the dedicated `my-journal-generation` toolset. It exposes only four bounded journal operations and excludes terminal, web, general file, delegation, messaging, MCP, and unrelated plugin tools. Generation verifies that validated canonical notes exist before reporting success:
@@ -107,7 +156,7 @@ hermes journal generate 2026-07-27
 hermes journal backfill "last 30 days"
 ```
 
-Daily scheduling uses Hermes native cron. Setup persists the exact returned job identifier, reuses a still active recorded job, and removal targets only that identifier:
+Daily scheduling uses Hermes native cron. Setup accepts five field cron expressions or explicit intervals such as `every 1h`. It persists durable exact ownership intent before creation, verifies the complete structured native job after creation, reuses an exact existing owned job, and removes only jobs matching that intent:
 
 ```text
 hermes journal cron-setup --schedule "0 11 * * *" --deliver local

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+
+DATABASE_APPROVAL_TIERS = {16 * 1024**3, 32 * 1024**3}
+DAILY_MESSAGE_TIERS = (25_000, 50_000, 100_000)
 
 @dataclass(frozen=True)
 class JournalConfig:
@@ -16,6 +20,7 @@ class JournalConfig:
     profiles: frozenset[str]
     platforms: frozenset[str]
     excluded_session_ids: frozenset[str]
+    database_size_approvals: tuple[tuple[str, int], ...]
     pii_mode: str
     entropy_mode: str
     max_message_chars: int
@@ -41,6 +46,7 @@ class JournalConfig:
             "profiles": sorted(self.profiles),
             "platforms": sorted(self.platforms),
             "excluded_session_count": len(self.excluded_session_ids),
+            "database_size_approvals": dict(self.database_size_approvals),
             "pii_mode": self.pii_mode,
             "entropy_mode": self.entropy_mode,
             "redact_secrets": True,
@@ -54,6 +60,33 @@ class JournalConfig:
                 "max_packet_chunks": self.max_packet_chunks,
             },
         }
+
+    def daily_authorization_sha256(self) -> str:
+        payload = {
+            "schema_version": 1,
+            "enabled": self.enabled,
+            "timezone": self.timezone,
+            "profiles": sorted(self.profiles),
+            "platforms": sorted(self.platforms),
+            "excluded_session_ids": sorted(self.excluded_session_ids),
+            "privacy": {
+                "redact_secrets": True,
+                "pii_mode": self.pii_mode,
+                "entropy_mode": self.entropy_mode,
+            },
+            "limits": {
+                "max_message_chars": self.max_message_chars,
+                "max_tool_chars": self.max_tool_chars,
+                "max_selected_messages": self.max_selected_messages,
+                "max_retained_chars": self.max_retained_chars,
+                "max_sessions": self.max_sessions,
+                "packet_chunk_bytes": self.packet_chunk_bytes,
+                "max_packet_chunks": self.max_packet_chunks,
+            },
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
 
 def _string_set(value: Any, label: str) -> frozenset[str]:
@@ -70,19 +103,26 @@ def _positive_int(value: Any, label: str) -> int:
     return value
 
 
-def load_config(path: Path) -> JournalConfig:
-    path = path.expanduser().absolute()
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"journal config is not a regular file: {path}")
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"journal config could not be read: {exc}") from exc
+def _database_approvals(value: Any, profiles: frozenset[str]) -> tuple[tuple[str, int], ...]:
+    if not isinstance(value, dict) or len(value) > 128:
+        raise ValueError("database_size_approvals must be a bounded object")
+    approvals: list[tuple[str, int]] = []
+    for profile, tier in value.items():
+        if (
+            not isinstance(profile, str) or not profile.strip() or len(profile) > 512
+            or profile not in profiles or isinstance(tier, bool) or tier not in DATABASE_APPROVAL_TIERS
+        ):
+            raise ValueError("database_size_approvals must bind selected profiles to compiled tiers")
+        approvals.append((profile, tier))
+    return tuple(sorted(approvals))
+
+
+def validate_config_payload(raw: Any) -> JournalConfig:
     if not isinstance(raw, dict) or raw.get("schema_version") != 1:
         raise ValueError("journal config schema_version must equal 1")
     allowed = {
         "schema_version", "enabled", "timezone", "profiles", "platforms",
-        "excluded_session_ids", "privacy", "limits",
+        "excluded_session_ids", "database_size_approvals", "privacy", "limits",
     }
     unknown = set(raw) - allowed
     if unknown:
@@ -116,17 +156,25 @@ def load_config(path: Path) -> JournalConfig:
     limits = raw.get("limits")
     if not isinstance(limits, dict):
         raise ValueError("limits must be an object")
+    max_selected_messages = _positive_int(
+        limits.get("max_selected_messages", 25000), "max_selected_messages"
+    )
+    if max_selected_messages > 100_000:
+        raise ValueError("max_selected_messages exceeds the compiled ceiling")
+    if max_selected_messages not in DAILY_MESSAGE_TIERS:
+        raise ValueError("max_selected_messages must equal a compiled tier")
     config = JournalConfig(
         enabled=enabled,
         timezone=timezone_name,
         profiles=profiles,
         platforms=platforms,
         excluded_session_ids=excluded,
+        database_size_approvals=_database_approvals(raw.get("database_size_approvals", {}), profiles),
         pii_mode=pii_mode,
         entropy_mode=entropy_mode,
         max_message_chars=_positive_int(limits.get("max_message_chars", 4000), "max_message_chars"),
         max_tool_chars=_positive_int(limits.get("max_tool_chars", 1200), "max_tool_chars"),
-        max_selected_messages=_positive_int(limits.get("max_selected_messages", 25000), "max_selected_messages"),
+        max_selected_messages=max_selected_messages,
         max_retained_chars=_positive_int(limits.get("max_retained_chars", 4000000), "max_retained_chars"),
         max_sessions=_positive_int(limits.get("max_sessions", 2000), "max_sessions"),
         packet_chunk_bytes=_positive_int(limits.get("packet_chunk_bytes", 120000), "packet_chunk_bytes"),
@@ -135,3 +183,14 @@ def load_config(path: Path) -> JournalConfig:
     if config.enabled:
         config.require_enabled()
     return config
+
+
+def load_config(path: Path) -> JournalConfig:
+    path = path.expanduser().absolute()
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"journal config is not a regular file: {path}")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"journal config could not be read: {exc}") from exc
+    return validate_config_payload(raw)

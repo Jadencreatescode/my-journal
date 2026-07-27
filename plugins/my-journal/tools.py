@@ -12,6 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from .core import _safe_files, journal_status, read_validated_entries, resolve_date_range, validated_entry_dates
+from .onboarding import (
+    approve_database_size,
+    approve_daily_workload,
+    approve_guided_setup,
+    discover_setup_inventory,
+    inspect_daily_workload_capacity,
+    plan_guided_setup,
+)
 
 
 GENERATION_TOOLSET = "my-journal-generation"
@@ -160,6 +168,68 @@ def handle_plan_backfill(args: dict, **kwargs) -> str:
     return _result(_missing_days, str(args.get("range", "")))
 
 
+def handle_setup_inventory(args: dict, **kwargs) -> str:
+    return _result(
+        discover_setup_inventory,
+        home=Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")),
+        journal_root=journal_root(),
+    )
+
+
+def handle_setup_database_approve(args: dict, **kwargs) -> str:
+    return _result(
+        approve_database_size,
+        home=Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")),
+        journal_root=journal_root(),
+        profile=args.get("profile"),
+        confirmation=args.get("confirmation"),
+    )
+
+
+def handle_daily_workload_check(args: dict, **kwargs) -> str:
+    return _result(
+        inspect_daily_workload_capacity,
+        home=Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")),
+        journal_root=journal_root(),
+        journal_date=args.get("journal_date"),
+    )
+
+
+def handle_daily_workload_approve(args: dict, **kwargs) -> str:
+    return _result(
+        approve_daily_workload,
+        home=Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")),
+        journal_root=journal_root(),
+        journal_date=args.get("journal_date"),
+        confirmation=args.get("confirmation"),
+    )
+
+
+def handle_setup_plan(args: dict, **kwargs) -> str:
+    return _result(
+        plan_guided_setup,
+        home=Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")),
+        journal_root=journal_root(),
+        profiles=args.get("profiles"),
+        platforms=args.get("platforms"),
+        timezone_name=args.get("timezone"),
+        excluded_session_ids=args.get("excluded_session_ids", []),
+        start_date=args.get("start_date"),
+        end_date=args.get("end_date"),
+        pii_mode=args.get("pii_mode", "mask"),
+        entropy_mode=args.get("entropy_mode", "report"),
+    )
+
+
+def handle_setup_approve(args: dict, **kwargs) -> str:
+    return _result(
+        approve_guided_setup,
+        journal_root=journal_root(),
+        plan_id=args.get("plan_id"),
+        confirmation=args.get("confirmation"),
+    )
+
+
 def _validated_day(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("journal_date must be an ISO calendar date")
@@ -241,6 +311,25 @@ def _generation_collect(journal_date: str) -> dict[str, Any]:
     if existing is not None:
         return _collection_summary(existing, resumed=True)
     home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")).expanduser().absolute()
+    capacity = inspect_daily_workload_capacity(
+        home=home, journal_root=root, journal_date=journal_date,
+    )
+    if not capacity["ok"]:
+        if capacity.get("reason") == "database_size_approval_required":
+            capacity["next_action"] = (
+                "approve the exact profile tier with journal_setup_database_approve, then retry this date"
+            )
+        elif capacity.get("reason") == "absolute_database_limit_exceeded":
+            capacity["next_action"] = (
+                "use a separately reviewed bounded database sharding or indexing strategy"
+            )
+        else:
+            capacity["next_action"] = (
+                "approve the exact required tier with journal_daily_workload_approve, then retry this date"
+                if capacity.get("required_tier") is not None
+                else "use a separately approved bounded strategy for this date"
+            )
+        return capacity
     command = [
         sys.executable,
         str(_scripts_dir() / "collect_journal.py"),
@@ -469,6 +558,79 @@ BACKFILL_SCHEMA = {
     "name": "journal_plan_backfill",
     "description": "Plan a read only historical journal backfill by listing existing and missing dates. This never starts collection.",
     "parameters": {"type": "object", "properties": {"range": {"type": "string"}}, "required": ["range"]},
+}
+SETUP_INVENTORY_SCHEMA = {
+    "name": "journal_setup_inventory",
+    "description": "List available Hermes profile and platform labels for guided setup without reading message bodies.",
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+SETUP_DATABASE_APPROVE_SCHEMA = {
+    "name": "journal_setup_database_approve",
+    "description": "Approve the exact next compiled size tier for one blocked profile database.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "profile": {"type": "string", "minLength": 1, "maxLength": 512},
+            "confirmation": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["profile", "confirmation"],
+        "additionalProperties": False,
+    },
+}
+DAILY_WORKLOAD_CHECK_SCHEMA = {
+    "name": "journal_daily_workload_check",
+    "description": "Check one activity date against the explicitly approved daily message tier using metadata only.",
+    "parameters": {
+        "type": "object",
+        "properties": {"journal_date": {"type": "string", "format": "date"}},
+        "required": ["journal_date"],
+        "additionalProperties": False,
+    },
+}
+DAILY_WORKLOAD_APPROVE_SCHEMA = {
+    "name": "journal_daily_workload_approve",
+    "description": "Approve the exact next global daily message tier, triggered by one blocked activity date and reusable by future dates.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "journal_date": {"type": "string", "format": "date"},
+            "confirmation": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["journal_date", "confirmation"],
+        "additionalProperties": False,
+    },
+}
+SETUP_PLAN_SCHEMA = {
+    "name": "journal_setup_plan",
+    "description": "Discover retained eligible conversation activity and persist a bounded approval plan without enabling or generating the journal.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "profiles": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 512}, "minItems": 1, "maxItems": 128, "uniqueItems": True},
+            "platforms": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 512}, "minItems": 1, "maxItems": 256, "uniqueItems": True},
+            "timezone": {"type": "string", "minLength": 1},
+            "excluded_session_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 512}, "maxItems": 10000, "uniqueItems": True},
+            "start_date": {"type": "string", "format": "date"},
+            "end_date": {"type": "string", "format": "date"},
+            "pii_mode": {"type": "string", "enum": ["mask", "preserve"]},
+            "entropy_mode": {"type": "string", "enum": ["report", "redact", "off"]},
+        },
+        "required": ["profiles", "platforms", "timezone", "pii_mode", "entropy_mode"],
+        "additionalProperties": False,
+    },
+}
+SETUP_APPROVE_SCHEMA = {
+    "name": "journal_setup_approve",
+    "description": "Approve one immutable setup plan with its exact phrase, enable collection, and generate only its missing activity dates.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "plan_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+            "confirmation": {"type": "string", "minLength": 1},
+        },
+        "required": ["plan_id", "confirmation"],
+        "additionalProperties": False,
+    },
 }
 
 GENERATION_COLLECT_SCHEMA = {

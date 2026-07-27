@@ -45,6 +45,20 @@ class FakeContext:
 
 
 class PluginRegistrationTests(unittest.TestCase):
+    def test_plugin_manifest_lists_exactly_every_registered_tool(self):
+        plugin = load_plugin()
+        ctx = FakeContext()
+        plugin.register(ctx)
+        lines = (ROOT / "plugin.yaml").read_text(encoding="utf-8").splitlines()
+        start = lines.index("provides_tools:") + 1
+        manifest_tools = []
+        for line in lines[start:]:
+            if not line.startswith("  - "):
+                break
+            manifest_tools.append(line.removeprefix("  - "))
+        self.assertEqual(len(manifest_tools), len(set(manifest_tools)))
+        self.assertEqual(set(manifest_tools), set(ctx.tools))
+
     def test_cron_root_descriptor_lock_rejects_concurrent_owner(self):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
@@ -622,6 +636,12 @@ class PluginRegistrationTests(unittest.TestCase):
                 "journal_read_entries",
                 "journal_find_gaps",
                 "journal_plan_backfill",
+                "journal_setup_inventory",
+                "journal_setup_database_approve",
+                "journal_daily_workload_check",
+                "journal_daily_workload_approve",
+                "journal_setup_plan",
+                "journal_setup_approve",
                 "journal_generation_collect",
                 "journal_generation_get_chunk",
                 "journal_generation_record_digest",
