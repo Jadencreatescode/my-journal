@@ -16,6 +16,7 @@ import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 
 COMPONENTS = (
@@ -26,10 +27,14 @@ COMPONENTS = (
 _METADATA = ".my-journal"
 _STATE = "install-state.json"
 _TRANSACTION = "install-transaction.json"
-_LOCK = "lifecycle.lock"
 _MAX_JSON_BYTES = 1024 * 1024
 _ALLOWED_DESTINATIONS = frozenset(target.as_posix() for _, target in COMPONENTS)
 _STAGE_RE = re.compile(r"^\.my-journal-(?:stage|restore|uninstall)-[A-Za-z0-9_-]+$")
+
+
+class _LockedHome(NamedTuple):
+    anchor: Path
+    display: Path
 
 
 def _home(hermes_home: Path) -> Path:
@@ -79,18 +84,47 @@ def _stage(value: object, action: str) -> Path:
 
 def _reject_symlink_chain(hermes_home: Path, destination: Path) -> None:
     relative = destination.relative_to(hermes_home)
-    current = hermes_home
-    if current.is_symlink():
-        raise ValueError(f"Hermes home must not be a symlink: {current}")
-    for part in relative.parts:
-        current = current / part
-        if current.is_symlink():
-            raise ValueError(f"installation destination contains a symlink: {current}")
+    descriptor = _open_directory_descriptor(hermes_home)
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        for index, part in enumerate(relative.parts):
+            try:
+                metadata = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ValueError(f"installation destination contains a symlink: {destination}")
+            if index < len(relative.parts) - 1:
+                next_descriptor = os.open(part, directory_flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = next_descriptor
+    finally:
+        os.close(descriptor)
 
 
 def _open_directory_descriptor(path: Path) -> int:
     absolute = path.expanduser().absolute()
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    parts = absolute.parts
+    if len(parts) >= 5 and parts[:4] == ("/", "proc", "self", "fd") and parts[4].isdigit():
+        descriptor = os.dup(int(parts[4]))
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError("locked Hermes home descriptor is not a directory")
+            for part in parts[5:]:
+                next_descriptor = os.open(part, flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = next_descriptor
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
     descriptor = os.open(absolute.anchor or "/", flags)
     try:
         for part in absolute.parts[1:]:
@@ -101,6 +135,36 @@ def _open_directory_descriptor(path: Path) -> int:
     except BaseException:
         os.close(descriptor)
         raise
+
+
+def _mkdir_anchored(root: Path, destination: Path) -> None:
+    relative = destination.relative_to(root)
+    descriptor = _open_directory_descriptor(root)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        for part in relative.parts:
+            try:
+                os.mkdir(part, 0o755, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            else:
+                os.fsync(descriptor)
+            try:
+                metadata = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise ValueError(f"directory path is unsafe: {destination}")
+                next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            except OSError:
+                raise ValueError(f"directory path is unsafe: {destination}") from None
+            os.close(descriptor)
+            descriptor = next_descriptor
+    finally:
+        os.close(descriptor)
 
 
 def _metadata_descriptor(hermes_home: Path, *, create: bool) -> int:
@@ -298,20 +362,15 @@ def _remove_metadata(hermes_home: Path, name: str, *, missing_ok: bool = True) -
 @contextlib.contextmanager
 def _lifecycle_lock(hermes_home: Path):
     home = _home(hermes_home)
-    directory_fd = _metadata_descriptor(home, create=True)
-    descriptor: int | None = None
+    descriptor = _open_directory_descriptor(home)
     try:
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-        descriptor = os.open(_LOCK, flags, 0o600, dir_fd=directory_fd)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise BlockingIOError("another My Journal lifecycle operation is in progress") from None
-        yield home
+        yield _LockedHome(anchor=Path(f"/proc/self/fd/{descriptor}"), display=home)
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        os.close(directory_fd)
+        os.close(descriptor)
 
 
 def _tree_sha256(root: Path) -> str:
@@ -387,7 +446,10 @@ def _parse_components(raw: object, home: Path, *, require_hash: bool) -> list[di
     for item in raw:
         if not isinstance(item, dict):
             raise ValueError("installation metadata component is malformed")
-        relative = _destination(item.get("destination"))
+        required_keys = {"destination", "backup", "installed_sha256"} if require_hash else {"destination", "backup"}
+        if set(item) != required_keys:
+            raise ValueError("installation metadata component is malformed")
+        relative = _destination(item["destination"])
         if relative.as_posix() in seen:
             raise ValueError("installation metadata contains a duplicate destination")
         seen.add(relative.as_posix())
@@ -401,6 +463,22 @@ def _parse_components(raw: object, home: Path, *, require_hash: bool) -> list[di
         if backup_path is not None:
             _reject_symlink_chain(home, backup_path)
         parsed.append({"relative": relative, "destination": destination, "backup_relative": backup, "backup": backup_path, "installed_sha256": expected})
+    required = {destination.as_posix() for _, destination in COMPONENTS}
+    if seen != required:
+        raise ValueError("installation metadata does not contain the complete component set")
+    return parsed
+
+
+def _validated_state(raw: object, home: Path) -> list[dict]:
+    if not isinstance(raw, dict) or set(raw) != {"schema_version", "components"}:
+        raise ValueError("installation state is malformed")
+    version = raw["schema_version"]
+    if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+        raise ValueError("unsupported installation state schema version")
+    parsed = _parse_components(raw["components"], home, require_hash=True)
+    backup_presence = [item["backup"] is not None for item in parsed]
+    if any(backup_presence) and not all(backup_presence):
+        raise ValueError("installation state contains mixed backup ownership")
     return parsed
 
 
@@ -448,6 +526,17 @@ def _restore_previous_state(home: Path, transaction: dict) -> None:
 
 def _validated_transaction(home: Path) -> tuple[dict, str, str, Path, list[dict]]:
     transaction = _read_json(home, _TRANSACTION, missing_message="no interrupted My Journal transaction")
+    base_keys = {"schema_version", "action", "status", "stage_root", "components", "previous_state"}
+    if set(transaction) not in (base_keys, base_keys | {"final_state"}):
+        raise ValueError("installation transaction is malformed")
+    version = transaction["schema_version"]
+    if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+        raise ValueError("unsupported installation transaction schema version")
+    previous_state = transaction.get("previous_state")
+    if previous_state is not None:
+        _validated_state(previous_state, home)
+    if "final_state" in transaction and transaction["final_state"] is not None:
+        _validated_state(transaction["final_state"], home)
     action = transaction.get("action")
     status = transaction.get("status", "active")
     if action not in {"install", "restore", "uninstall"} or status not in {"active", "committing", "committed"}:
@@ -459,7 +548,7 @@ def _validated_transaction(home: Path) -> tuple[dict, str, str, Path, list[dict]
     return transaction, action, status, stage, components
 
 
-def _recover_locked(home: Path) -> list[str]:
+def _recover_locked(home: Path, display_home: Path | None = None) -> list[str]:
     transaction, action, status, stage, components = _validated_transaction(home)
     if status == "active":
         if action == "install":
@@ -506,11 +595,13 @@ def _recover_locked(home: Path) -> list[str]:
     if _exists(stage):
         _remove_path(stage)
     _remove_metadata(home, _TRANSACTION, missing_ok=False)
-    return [str(item["destination"]) for item in components]
+    output_home = display_home if display_home is not None else home
+    return [str(output_home / item["relative"]) for item in components]
 
 
 def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
-    with _lifecycle_lock(hermes_home) as home:
+    with _lifecycle_lock(hermes_home) as locked_home:
+        home = locked_home.anchor
         try:
             _read_json(home, _TRANSACTION, missing_message="")
         except FileNotFoundError:
@@ -525,9 +616,26 @@ def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
             raise ValueError("package is incomplete: " + ", ".join(missing))
         existing = [destination for _, destination in destinations if _exists(destination)]
         if existing and not upgrade:
-            raise FileExistsError("components already exist; rerun with --upgrade: " + ", ".join(str(path) for path in existing))
+            displayed_existing = [
+                str(locked_home.display / destination.relative_to(home))
+                for destination in existing
+            ]
+            raise FileExistsError(
+                "components already exist; rerun with --upgrade: " + ", ".join(displayed_existing)
+            )
+        if upgrade and existing and len(existing) != len(destinations):
+            missing_destinations = [
+                str(locked_home.display / destination.relative_to(home))
+                for _, destination in destinations
+                if not _exists(destination)
+            ]
+            raise ValueError(
+                "partial preexisting component set; repair or remove it before upgrade; "
+                "missing: " + ", ".join(missing_destinations)
+            )
         try:
             previous_state = _read_json(home, _STATE, missing_message="")
+            _validated_state(previous_state, home)
         except FileNotFoundError:
             previous_state = None
         stage = _new_stage(home, "stage")
@@ -535,7 +643,7 @@ def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
             staged: list[tuple[Path, Path]] = []
             for source, destination in destinations:
                 staged_source = stage / destination.relative_to(home)
-                staged_source.parent.mkdir(parents=True, exist_ok=True)
+                _mkdir_anchored(stage, staged_source.parent)
                 shutil.copytree(source, staged_source, symlinks=True)
                 staged.append((staged_source, destination))
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
@@ -552,7 +660,7 @@ def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
         _persist_transaction(home, stage, transaction)
         try:
             for item in components:
-                item["destination"].parent.mkdir(parents=True, exist_ok=True)
+                _mkdir_anchored(home, item["destination"].parent)
                 if item["backup"] is not None:
                     if _exists(item["backup"]):
                         raise FileExistsError(f"backup destination already exists: {item['backup']}")
@@ -564,24 +672,27 @@ def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
             if _exists(stage):
                 _remove_path(stage)
             _remove_metadata(home, _TRANSACTION, missing_ok=False)
-            return [str(item["destination"]) for item in components]
+            return [str(locked_home.display / item["relative"]) for item in components]
         except Exception:
             _recover_locked(home)
             raise
 
 
 def recover(hermes_home: Path) -> list[str]:
-    with _lifecycle_lock(hermes_home) as home:
-        return _recover_locked(home)
+    with _lifecycle_lock(hermes_home) as locked_home:
+        return _recover_locked(locked_home.anchor, locked_home.display)
 
 
 def restore(hermes_home: Path, *, force: bool = False) -> list[str]:
-    with _lifecycle_lock(hermes_home) as home:
+    with _lifecycle_lock(hermes_home) as locked_home:
+        home = locked_home.anchor
         state = _read_json(home, _STATE, missing_message="no restorable My Journal installation state")
-        components = _parse_components(state.get("components"), home, require_hash=True)
+        components = _validated_state(state, home)
         for item in components:
             if not force and _tree_sha256(item["destination"]) != item["installed_sha256"]:
-                raise ValueError(f"installed component was modified: {item['destination']}")
+                raise ValueError(
+                    f"installed component was modified: {locked_home.display / item['relative']}"
+                )
             if item["backup"] is not None and not _exists(item["backup"]):
                 raise FileNotFoundError(f"installation backup is missing: {item['backup']}")
         managed = [item for item in components if item["backup"] is not None]
@@ -594,7 +705,7 @@ def restore(hermes_home: Path, *, force: bool = False) -> list[str]:
         try:
             for item in components:
                 staged = stage / item["relative"]
-                staged.parent.mkdir(parents=True, exist_ok=True)
+                _mkdir_anchored(stage, staged.parent)
                 if _exists(item["destination"]):
                     _move_path(item["destination"], staged)
                 if item["backup"] is not None:
@@ -608,19 +719,22 @@ def restore(hermes_home: Path, *, force: bool = False) -> list[str]:
             if _exists(stage):
                 _remove_path(stage)
             _remove_metadata(home, _TRANSACTION, missing_ok=False)
-            return [str(item["destination"]) for item in components]
+            return [str(locked_home.display / item["relative"]) for item in components]
         except Exception:
             _recover_locked(home)
             raise
 
 
 def uninstall(hermes_home: Path, *, force: bool = False) -> list[str]:
-    with _lifecycle_lock(hermes_home) as home:
+    with _lifecycle_lock(hermes_home) as locked_home:
+        home = locked_home.anchor
         state = _read_json(home, _STATE, missing_message="My Journal installation state was not found")
-        components = _parse_components(state.get("components"), home, require_hash=True)
+        components = _validated_state(state, home)
         for item in components:
             if not force and _tree_sha256(item["destination"]) != item["installed_sha256"]:
-                raise ValueError(f"installed component was modified: {item['destination']}")
+                raise ValueError(
+                    f"installed component was modified: {locked_home.display / item['relative']}"
+                )
         stage = _new_stage(home, "uninstall")
         transaction = _transaction_payload("uninstall", stage, home, components, state)
         _persist_transaction(home, stage, transaction)
@@ -629,7 +743,7 @@ def uninstall(hermes_home: Path, *, force: bool = False) -> list[str]:
                 if not _exists(item["destination"]):
                     continue
                 staged = stage / item["relative"]
-                staged.parent.mkdir(parents=True, exist_ok=True)
+                _mkdir_anchored(stage, staged.parent)
                 _move_path(item["destination"], staged)
             _set_status(home, transaction, "committing")
             _remove_metadata(home, _STATE, missing_ok=False)
@@ -640,7 +754,7 @@ def uninstall(hermes_home: Path, *, force: bool = False) -> list[str]:
                 if item["backup"] is not None and _exists(item["backup"]):
                     _remove_path(item["backup"])
             _remove_metadata(home, _TRANSACTION, missing_ok=False)
-            return [str(item["destination"]) for item in components]
+            return [str(locked_home.display / item["relative"]) for item in components]
         except Exception:
             if transaction.get("status") == "active":
                 _recover_locked(home)

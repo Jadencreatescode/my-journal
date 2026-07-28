@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import signal
 import tempfile
 import unittest
@@ -22,6 +23,268 @@ def load_installer():
 
 
 class InstallerSecurityTests(unittest.TestCase):
+    def test_install_parent_creation_rejects_post_transaction_symlink_without_external_write(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            outside = base / "outside"
+            home.mkdir()
+            outside.mkdir()
+            real_persist = installer._persist_transaction
+            swapped = False
+
+            def persist_then_swap(target_home, stage, transaction):
+                nonlocal swapped
+                real_persist(target_home, stage, transaction)
+                (home / "skills").symlink_to(outside, target_is_directory=True)
+                swapped = True
+
+            with mock.patch.object(installer, "_persist_transaction", side_effect=persist_then_swap):
+                with self.assertRaises(ValueError):
+                    installer.install(ROOT, home, upgrade=False)
+
+            self.assertTrue(swapped)
+            self.assertEqual(list(outside.iterdir()), [])
+            transaction_path = home / ".my-journal" / "install-transaction.json"
+            self.assertTrue(transaction_path.is_file())
+            self.assertNotEqual(list(home.glob(".my-journal-stage-*")), [])
+
+            (home / "skills").unlink()
+            installer.recover(home)
+            self.assertFalse(transaction_path.exists())
+            self.assertEqual(list(home.glob(".my-journal-stage-*")), [])
+
+    def test_install_remains_bound_to_locked_home_after_real_directory_swap(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            home = base / "home"
+            moved = base / "home-original"
+            home.mkdir()
+            real_read_json = installer._read_json
+            swapped = False
+
+            def swap_then_read(target_home, name, *, missing_message):
+                nonlocal swapped
+                if not swapped:
+                    home.rename(moved)
+                    home.mkdir()
+                    swapped = True
+                return real_read_json(target_home, name, missing_message=missing_message)
+
+            with mock.patch.object(installer, "_read_json", side_effect=swap_then_read):
+                installed = installer.install(ROOT, home, upgrade=False)
+
+            self.assertTrue(swapped)
+            for _, target in installer.COMPONENTS:
+                self.assertTrue((moved / target).is_dir())
+                self.assertFalse((home / target).exists())
+            self.assertEqual(
+                installed,
+                [str(home / target) for _, target in installer.COMPONENTS],
+            )
+
+    def test_restore_and_uninstall_modified_errors_use_requested_home_path(self):
+        installer = load_installer()
+        for operation_name in ("restore", "uninstall"):
+            with self.subTest(operation=operation_name), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp) / "home"
+                home.mkdir()
+                installer.install(ROOT, home, upgrade=False)
+                target = installer.COMPONENTS[0][1]
+                (home / target / "changed.txt").write_text("changed", encoding="utf-8")
+                operation = getattr(installer, operation_name)
+
+                with self.assertRaisesRegex(ValueError, "installed component was modified") as caught:
+                    operation(home)
+
+                self.assertIn(str(home / target), str(caught.exception))
+                self.assertNotIn("/proc/self/fd/", str(caught.exception))
+
+    def test_existing_component_error_uses_requested_home_path(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            target = installer.COMPONENTS[0][1]
+            (home / target).mkdir(parents=True)
+
+            with self.assertRaisesRegex(FileExistsError, "components already exist") as caught:
+                installer.install(ROOT, home, upgrade=False)
+
+            self.assertIn(str(home / target), str(caught.exception))
+            self.assertNotIn("/proc/self/fd/", str(caught.exception))
+
+    def test_restore_rejects_mixed_backup_ownership_before_side_effects(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            installer.install(ROOT, home, upgrade=False)
+            state_path = home / ".my-journal" / "install-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            first = state["components"][0]
+            destination = home / first["destination"]
+            backup_relative = Path(first["destination"]).with_name(
+                f"{destination.name}.backup-20260727T000000Z-deadbeef"
+            )
+            backup = home / backup_relative
+            installer.shutil.copytree(destination, backup)
+            first["backup"] = backup_relative.as_posix()
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            before = {
+                target.as_posix(): installer._tree_sha256(home / target)
+                for _, target in installer.COMPONENTS
+            }
+
+            with self.assertRaisesRegex(ValueError, "mixed backup ownership"):
+                installer.restore(home, force=True)
+
+            for _, target in installer.COMPONENTS:
+                self.assertEqual(
+                    installer._tree_sha256(home / target), before[target.as_posix()]
+                )
+            self.assertTrue(backup.is_dir())
+            self.assertTrue(state_path.is_file())
+
+    def test_upgrade_rejects_partial_preexisting_components_before_side_effects(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            existing_target = installer.COMPONENTS[0][1]
+            existing = home / existing_target
+            existing.mkdir(parents=True)
+            original = existing / "original.txt"
+            original.write_text("original", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "partial preexisting component set") as caught:
+                installer.install(ROOT, home, upgrade=True)
+
+            expected_missing = ", ".join(
+                str(home / target) for _, target in installer.COMPONENTS[1:]
+            )
+            self.assertIn("missing: " + expected_missing, str(caught.exception))
+            self.assertNotIn("/proc/self/fd/", str(caught.exception))
+            self.assertEqual(original.read_text(encoding="utf-8"), "original")
+            for _, target in installer.COMPONENTS[1:]:
+                self.assertFalse((home / target).exists())
+            metadata = home / ".my-journal"
+            self.assertFalse(metadata.exists())
+            self.assertFalse((metadata / "install-state.json").exists())
+            self.assertFalse((metadata / "install-transaction.json").exists())
+            self.assertEqual(list(home.glob(".my-journal-stage-*")), [])
+
+    def test_uninstall_rejects_extra_component_state_key_before_side_effects(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            installer.install(ROOT, home, upgrade=False)
+            state_path = home / ".my-journal" / "install-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["components"][0]["unexpected"] = "value"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "component is malformed"):
+                installer.uninstall(home, force=True)
+
+            self.assertTrue(state_path.is_file())
+            for _, target in installer.COMPONENTS:
+                self.assertTrue((home / target).is_dir())
+
+    def test_uninstall_rejects_partial_component_state_before_removing_anything(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            installer.install(ROOT, home, upgrade=False)
+            state_path = home / ".my-journal" / "install-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["components"] = state["components"][:1]
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "complete component set"):
+                installer.uninstall(home, force=True)
+
+            self.assertTrue(state_path.is_file())
+            for _, target in installer.COMPONENTS:
+                self.assertTrue((home / target).is_dir())
+
+    def test_uninstall_rejects_unsupported_state_schema_before_removing_anything(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            installer.install(ROOT, home, upgrade=False)
+            state_path = home / ".my-journal" / "install-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["schema_version"] = 2
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "schema version"):
+                installer.uninstall(home, force=True)
+
+            self.assertTrue(state_path.is_file())
+            for _, target in installer.COMPONENTS:
+                self.assertTrue((home / target).is_dir())
+            state["schema_version"] = True
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "schema version"):
+                installer.uninstall(home, force=True)
+            for _, target in installer.COMPONENTS:
+                self.assertTrue((home / target).is_dir())
+
+    def test_recovery_rejects_extra_transaction_key_before_side_effects(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            installer.install(ROOT, home, upgrade=False)
+            state = installer._read_json(
+                home, installer._STATE, missing_message="missing state"
+            )
+            components = installer._validated_state(state, home)
+            stage = installer._new_stage(home, "uninstall")
+            transaction = installer._transaction_payload(
+                "uninstall", stage, home, components, state,
+            )
+            transaction["unexpected"] = "value"
+            installer._write_transaction(home, transaction)
+
+            with self.assertRaisesRegex(ValueError, "transaction is malformed"):
+                installer.recover(home)
+
+            self.assertTrue((home / ".my-journal" / "install-state.json").is_file())
+            for _, target in installer.COMPONENTS:
+                self.assertTrue((home / target).is_dir())
+
+    def test_recovery_rejects_transaction_with_unsupported_embedded_state(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            installer.install(ROOT, home, upgrade=False)
+            state = installer._read_json(
+                home, installer._STATE, missing_message="missing state"
+            )
+            components = installer._validated_state(state, home)
+            stage = installer._new_stage(home, "uninstall")
+            transaction = installer._transaction_payload(
+                "uninstall", stage, home, components, state,
+            )
+            transaction["previous_state"]["schema_version"] = 2
+            installer._write_transaction(home, transaction)
+
+            with self.assertRaisesRegex(ValueError, "schema version"):
+                installer.recover(home)
+
+            current = installer._read_json(
+                home, installer._STATE, missing_message="missing state"
+            )
+            self.assertEqual(current["schema_version"], 1)
+
     def test_remove_remains_anchored_when_parent_is_swapped(self):
         installer = load_installer()
         with tempfile.TemporaryDirectory() as tmp:
@@ -420,11 +683,23 @@ class InstallerHardeningRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = self._home(Path(tmp))
             stage = installer._new_stage(home, "stage")
-            relative = installer.COMPONENTS[0][1]
-            components = [{"relative": relative, "backup_relative": None}]
+            components = [
+                {"relative": relative, "backup_relative": None}
+                for _, relative in installer.COMPONENTS
+            ]
+            final_state = {
+                "schema_version": 1,
+                "components": [
+                    {
+                        "destination": relative.as_posix(),
+                        "backup": None,
+                        "installed_sha256": "0" * 64,
+                    }
+                    for _, relative in installer.COMPONENTS
+                ],
+            }
             transaction = installer._transaction_payload(
-                "install", stage, home, components, None,
-                {"schema_version": 1, "components": []},
+                "install", stage, home, components, None, final_state,
             )
             real_write = installer._write_transaction
 
