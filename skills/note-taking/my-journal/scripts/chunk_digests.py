@@ -9,7 +9,7 @@ from typing import Any
 
 from atomic_files import atomic_write_text
 from collect_journal import reject_symlink_components
-from safe_files import safe_read_text
+from safe_files import safe_mkdir_tree, safe_read_text
 
 
 _RESERVED_PREFIXES = (
@@ -217,7 +217,7 @@ def accept_chunk_digest(
         if existing != receipt_text:
             raise ValueError("chunk already has a different digest")
     else:
-        digest_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        safe_mkdir_tree(_journal_root(plan_path), digest_dir)
         reject_symlink_components(digest_dir)
         atomic_write_text(receipt_path, receipt_text, trusted_root=_journal_root(plan_path))
     return {

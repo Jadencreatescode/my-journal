@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPTS = Path(__file__).parents[1] / "scripts"
@@ -53,6 +54,52 @@ def create_db(path: Path) -> None:
 
 
 class ChunkDigestTests(unittest.TestCase):
+    def test_digest_directory_creation_rejects_ancestor_swap_without_external_write(self):
+        collector = load_script("collect_journal")
+        safe_files = load_script("safe_files")
+        digests = load_script("chunk_digests")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            external = root / "external"
+            external.mkdir()
+            create_db(home / "state.db")
+            result = collector.write_run(
+                home=home,
+                output_dir=root / "journal",
+                journal_date="1970-01-01",
+                start_ts=0.0,
+                end_ts=86400.0,
+                packet_chunk_chars=1400,
+                max_packet_chunks=10,
+            )
+            plan_path = Path(result["packet_plan_path"])
+            run_id = result["run_id"]
+            runs_dir = root / "journal" / "runs"
+            digest_dir = runs_dir / run_id / "digests"
+            first = digests.next_pending_chunk(plan_path, digest_dir)
+            real_mkdir = safe_files.os.mkdir
+            swapped = False
+
+            def racing_mkdir(path, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if not swapped:
+                    runs_dir.symlink_to(external, target_is_directory=True)
+                    swapped = True
+                return real_mkdir(path, mode, dir_fd=dir_fd)
+
+            with mock.patch.object(safe_files.os, "mkdir", side_effect=racing_mkdir):
+                with self.assertRaisesRegex(Exception, "symlink|unsafe"):
+                    digests.accept_chunk_digest(
+                        plan_path,
+                        digest_dir,
+                        first["chunk_id"],
+                        "A bounded summary.",
+                    )
+
+            self.assertTrue(swapped)
+            self.assertFalse((external / run_id).exists())
+
     def test_receipts_make_chunk_processing_resumable_and_idempotent(self):
         collector = load_script("collect_journal")
         digests = load_script("chunk_digests")
