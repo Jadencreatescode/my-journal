@@ -85,6 +85,38 @@ class InstallerSecurityTests(unittest.TestCase):
                 [str(home / target) for _, target in installer.COMPONENTS],
             )
 
+    def test_restore_missing_backup_error_uses_requested_home_path(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "requested-home"
+            home.mkdir()
+            installer.install(ROOT, home, upgrade=False)
+            installer.install(ROOT, home, upgrade=True)
+            state_path = home / ".my-journal" / "install-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            missing_relative = state["components"][0]["backup"]
+            self.assertIsNotNone(missing_relative)
+            missing_backup = home / missing_relative
+            missing_backup.rename(home / f"{missing_backup.name}.removed")
+            before = {
+                target: installer._tree_sha256(home / target)
+                for _, target in installer.COMPONENTS
+            }
+
+            with self.assertRaisesRegex(FileNotFoundError, "installation backup is missing") as caught:
+                installer.restore(home, force=True)
+
+            self.assertIn(str(missing_backup), str(caught.exception))
+            self.assertNotIn("/proc/self/fd/", str(caught.exception))
+            self.assertTrue(state_path.is_file())
+            self.assertEqual(
+                before,
+                {
+                    target: installer._tree_sha256(home / target)
+                    for _, target in installer.COMPONENTS
+                },
+            )
+
     def test_restore_and_uninstall_modified_errors_use_requested_home_path(self):
         installer = load_installer()
         for operation_name in ("restore", "uninstall"):

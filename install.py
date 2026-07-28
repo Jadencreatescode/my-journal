@@ -694,7 +694,8 @@ def restore(hermes_home: Path, *, force: bool = False) -> list[str]:
                     f"installed component was modified: {locked_home.display / item['relative']}"
                 )
             if item["backup"] is not None and not _exists(item["backup"]):
-                raise FileNotFoundError(f"installation backup is missing: {item['backup']}")
+                displayed_backup = locked_home.display / item["backup"].relative_to(home)
+                raise FileNotFoundError(f"installation backup is missing: {displayed_backup}")
         managed = [item for item in components if item["backup"] is not None]
         final_state = None
         if managed:
