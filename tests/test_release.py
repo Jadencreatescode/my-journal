@@ -37,7 +37,7 @@ def create_repo(root: Path) -> str:
         "README.md": "release fixture\n",
         "LICENSE": "MIT\n",
         "install.py": "print('fixture')\n",
-        "plugins/my-journal/plugin.yaml": "version: 0.1.0-alpha.2\n",
+        "plugins/my-journal/plugin.yaml": "version: 0.1.0-alpha.3\n",
         "plugins/my-journal/__init__.py": "VALUE = 1\n",
         "plugins/my-journal/onboarding.py": "VALUE = 1\n",
         "plugins/my-journal/tests/test_onboarding.py": "# onboarding tests\n",
@@ -122,7 +122,7 @@ class ReleaseToolTests(unittest.TestCase):
             with tarfile.open(first, "r:gz") as opened:
                 names = [member.name for member in opened.getmembers()]
             self.assertEqual(names, sorted(names))
-            root_name = "my-journal-v0.1.0-alpha.2"
+            root_name = "my-journal-v0.1.0-alpha.3"
             self.assertTrue(
                 all(name == root_name or name.startswith(root_name + "/") for name in names)
             )

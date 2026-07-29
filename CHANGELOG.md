@@ -1,16 +1,28 @@
 # Changelog
 
-## 0.1.0 alpha 2
+## 0.1.0 alpha 3
 
-Corrects macOS installation through system root aliases and the absence of Linux `/proc` descriptor paths while preserving descriptor anchored rejection of deeper symlinks. CI now checks the clean release tree before test caches are created.
+Corrected public alpha candidate after transactional upgrade acceptance testing.
 
 ### Fixed
 
-1. Resolve only a root level filesystem alias such as macOS `/var` before descriptor traversal.
-2. Bind macOS lifecycle operations to the locked Hermes home through a temporary descriptor based working directory, then restore the caller directory.
-3. Preserve no follow enforcement for every remaining path component.
-4. Share the same macOS root alias normalization across plugin and journal file operations and trust path validation.
-5. Run the release tree privacy check before Python tests create cache files.
+1. Upgrade rollback backups now live under installer owned metadata instead of active plugin and skill discovery roots.
+2. Existing alpha 2 sibling backups are removed only after the replacement installation state is durable and recoverable.
+3. Added regression coverage for safe backup placement, legacy state migration, rollback restoration, and discovery root cleanliness.
+
+## 0.1.0 alpha 2
+
+Corrected the public alpha after owner first use and macOS acceptance testing. First publication now creates its owned directories, macOS system root aliases are handled without weakening deeper symlink protections, and CI checks the clean release tree before test caches are created.
+
+### Fixed
+
+1. First canonical publication now creates its owned `notes/YYYY/MM` and `state` directories through descriptor anchored safe filesystem operations.
+2. Add regression coverage for first publication into a fresh journal root.
+3. Resolve only a root level filesystem alias such as macOS `/var` before descriptor traversal.
+4. Bind macOS lifecycle operations to the locked Hermes home through a temporary descriptor based working directory, then restore the caller directory.
+5. Preserve no follow enforcement for every remaining path component.
+6. Share the same macOS root alias normalization across plugin and journal file operations and trust path validation.
+7. Run the release tree privacy check before Python tests create cache files.
 
 ## 0.1.0 alpha 1
 

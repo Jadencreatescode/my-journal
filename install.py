@@ -26,6 +26,7 @@ COMPONENTS = (
     (Path("plugins/my-journal"), Path("plugins/my-journal")),
 )
 _METADATA = ".my-journal"
+_BACKUPS = "backups"
 _STATE = "install-state.json"
 _TRANSACTION = "install-transaction.json"
 _MAX_JSON_BYTES = 1024 * 1024
@@ -67,12 +68,26 @@ def _backup(value: object, destination: Path) -> Path | None:
     if value is None:
         return None
     path = _relative(value, label="backup")
-    pattern = re.compile(
+    legacy_pattern = re.compile(
         rf"^{re.escape(destination.name)}\.backup-\d{{8}}T\d{{6}}Z(?:-[0-9a-f]{{8}})?$"
     )
-    if path.parent != destination.parent or not pattern.fullmatch(path.name):
-        raise ValueError("installation state contains an unexpected backup")
-    return path
+    if path.parent == destination.parent and legacy_pattern.fullmatch(path.name):
+        return path
+    backup_name = destination.as_posix().replace("/", "__")
+    metadata_pattern = re.compile(
+        rf"^{re.escape(backup_name)}\.backup-\d{{8}}T\d{{6}}Z(?:-[0-9a-f]{{8}})?$"
+    )
+    if (
+        path.parent == Path(_METADATA) / _BACKUPS
+        and metadata_pattern.fullmatch(path.name)
+    ):
+        return path
+    raise ValueError("installation state contains an unexpected backup")
+
+
+def _backup_relative(destination: Path, stamp: str) -> Path:
+    backup_name = destination.as_posix().replace("/", "__")
+    return Path(_METADATA) / _BACKUPS / f"{backup_name}.backup-{stamp}"
 
 
 def _stage(value: object, action: str) -> Path:
@@ -521,6 +536,15 @@ def _validated_state(raw: object, home: Path) -> list[dict]:
     return parsed
 
 
+def _remove_state_backups(home: Path, raw: object) -> None:
+    if raw is None:
+        return
+    for item in _validated_state(raw, home):
+        backup = item["backup"]
+        if backup is not None and _exists(backup):
+            _remove_path(backup)
+
+
 def _new_stage(home: Path, action: str) -> Path:
     created = Path(tempfile.mkdtemp(prefix=f".my-journal-{action}-", dir=home))
     stage = home / created.name
@@ -618,6 +642,7 @@ def _recover_locked(home: Path, display_home: Path | None = None) -> list[str]:
             final = transaction.get("final_state")
             if isinstance(final, dict):
                 _write_state(home, final)
+            _remove_state_backups(home, transaction.get("previous_state"))
         elif action == "restore":
             final = transaction.get("final_state")
             if final is None:
@@ -690,7 +715,7 @@ def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
             components: list[dict] = []
             for staged_source, destination in staged:
                 relative = destination.relative_to(home)
-                backup_relative = relative.with_name(f"{relative.name}.backup-{stamp}") if _exists(destination) else None
+                backup_relative = _backup_relative(relative, stamp) if _exists(destination) else None
                 components.append({"relative": relative, "destination": destination, "backup_relative": backup_relative, "backup": home / backup_relative if backup_relative else None, "staged": staged_source})
             final_state = {"schema_version": 1, "components": [{"destination": item["relative"].as_posix(), "backup": item["backup_relative"].as_posix() if item["backup_relative"] else None, "installed_sha256": _tree_sha256(item["staged"])} for item in components]}
             transaction = _transaction_payload("install", stage, home, components, previous_state, final_state)
@@ -702,6 +727,7 @@ def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
             for item in components:
                 _mkdir_anchored(home, item["destination"].parent)
                 if item["backup"] is not None:
+                    _mkdir_anchored(home, item["backup"].parent)
                     if _exists(item["backup"]):
                         raise FileExistsError(f"backup destination already exists: {item['backup']}")
                     _move_path(item["destination"], item["backup"])
@@ -711,6 +737,7 @@ def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
             _set_status(home, transaction, "committed")
             if _exists(stage):
                 _remove_path(stage)
+            _remove_state_backups(home, previous_state)
             _remove_metadata(home, _TRANSACTION, missing_ok=False)
             return [str(locked_home.display / item["relative"]) for item in components]
         except Exception:

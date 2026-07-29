@@ -495,6 +495,8 @@ def _generation_complete(run_id: str, journal_date: str, sections: dict[str, Any
     year, month, _ = journal_date.split("-")
     canonical = root / "notes" / year / month / f"{journal_date}.md"
     state_path = root / "state" / f"{journal_date}-{run_id}.json"
+    _safe_files.safe_mkdir_tree(root, canonical.parent)
+    _safe_files.safe_mkdir_tree(root, state_path.parent)
     snapshots: dict[Path, str | None] = {}
     for path, limit in ((canonical, 2_000_000), (state_path, 1_000_000)):
         try:
