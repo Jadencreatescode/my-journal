@@ -81,7 +81,7 @@ class EntryDiscoveryTests(unittest.TestCase):
 
         with mock.patch.object(
             self.core._safe_files,
-            "_canonical_descriptor_path",
+            "canonical_descriptor_path",
             return_value=canonical,
         ) as canonicalize, mock.patch.object(Path, "lstat", fake_lstat):
             self.core.reject_symlink_components(requested)

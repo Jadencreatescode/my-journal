@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -88,6 +89,25 @@ def add_message(con, message_id, session_id, role, content, timestamp, tool_call
 
 
 class DiscoverDatabaseTests(unittest.TestCase):
+    def test_root_symlink_validation_uses_shared_canonical_path(self):
+        module = load_module()
+        requested = Path("/var/folders/example/home")
+        canonical = Path("/private/var/folders/example/home")
+
+        def fake_lstat(path):
+            mode = 0o120777 if str(path) == "/var" else 0o040755
+            return os.stat_result((mode, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+        with mock.patch.object(
+            module,
+            "canonical_descriptor_path",
+            return_value=canonical,
+            create=True,
+        ) as canonicalize, mock.patch.object(Path, "lstat", fake_lstat):
+            module.reject_symlink_components(requested)
+
+        canonicalize.assert_called_once_with(requested)
+
     def test_atomic_write_replaces_content_without_temp_residue(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

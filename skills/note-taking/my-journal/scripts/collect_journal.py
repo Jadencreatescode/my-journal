@@ -27,7 +27,7 @@ from atomic_files import atomic_write_text
 from evidence_identity import canonical_evidence_sha256
 from journal_config import load_config
 from secret_redaction import contains_likely_secret, redact_sensitive, redact_text
-from safe_files import descriptor_sqlite_uri, safe_mkdir_tree, safe_open_regular_fd, safe_read_text
+from safe_files import canonical_descriptor_path, descriptor_sqlite_uri, safe_mkdir_tree, safe_open_regular_fd, safe_read_text
 
 
 HARD_MAX_DATABASES = 128
@@ -161,7 +161,7 @@ class UnsafePathError(ValueError):
 
 def reject_symlink_components(path: Path) -> None:
     """Reject any existing symlink component without resolving the trust anchor."""
-    absolute = path.expanduser().absolute()
+    absolute = canonical_descriptor_path(path)
     current = Path(absolute.anchor)
     for part in absolute.parts[1:]:
         current = current / part

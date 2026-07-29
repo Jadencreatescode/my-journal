@@ -31,7 +31,7 @@ class SafeFileTests(unittest.TestCase):
             "realpath",
             side_effect=lambda value: "/private/var" if value == "/var" else value,
         ) as realpath:
-            canonical = module._canonical_descriptor_path(Path("/var/folders/example/journal"))
+            canonical = module.canonical_descriptor_path(Path("/var/folders/example/journal"))
 
         self.assertEqual(canonical, Path("/private/var/folders/example/journal"))
         islink.assert_called_once_with("/var")

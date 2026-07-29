@@ -14,7 +14,7 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_
 _FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 
 
-def _canonical_descriptor_path(path: Path) -> Path:
+def canonical_descriptor_path(path: Path) -> Path:
     absolute = path.expanduser().absolute()
     parts = absolute.parts
     if sys.platform == "darwin" and len(parts) > 1 and parts[1] in {"etc", "tmp", "var"}:
@@ -26,7 +26,7 @@ def _canonical_descriptor_path(path: Path) -> Path:
 
 
 def _absolute_parts(path: Path) -> tuple[Path, tuple[str, ...]]:
-    absolute = _canonical_descriptor_path(path)
+    absolute = canonical_descriptor_path(path)
     return Path(absolute.anchor), tuple(absolute.parts[1:])
 
 
