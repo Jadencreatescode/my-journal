@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0 alpha 2
+
+Corrected public alpha candidate after owner first use acceptance testing.
+
+### Fixed
+
+1. First canonical publication now creates its owned `notes/YYYY/MM` and `state` directories through descriptor anchored safe filesystem operations.
+2. Added regression coverage for first publication into a fresh journal root.
+
 ## 0.1.0 alpha 1
 
 Initial public alpha of the evidence backed activity journal for Hermes.

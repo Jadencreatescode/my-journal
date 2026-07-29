@@ -163,6 +163,60 @@ class PluginRegistrationTests(unittest.TestCase):
             self.assertEqual(canonical.read_text(encoding="utf-8"), "previous note\n")
             self.assertEqual(state.read_text(encoding="utf-8"), "previous state\n")
 
+    def test_generation_complete_creates_missing_owned_publication_directories(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        run_id = "b" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            canonical = root / "notes" / "2026" / "07" / f"{journal_date}.md"
+            state = root / "state" / f"{journal_date}-{run_id}.json"
+
+            class Validator:
+                @staticmethod
+                def validate_manifest(manifest):
+                    return []
+
+                @staticmethod
+                def validate_digest_bindings(manifest, digests):
+                    return []
+
+                @staticmethod
+                def validate_note(*args, **kwargs):
+                    return []
+
+                @staticmethod
+                def validate_and_commit(manifest_path, note_path, state_path, digest_dir):
+                    state_path.write_text("completed state\n", encoding="utf-8")
+                    return {"valid": True}
+
+            pending = {
+                "run_id": run_id,
+                "journal_date": journal_date,
+                "packet_plan_path": str(root / "packets" / "plan.json"),
+                "manifest_path": str(root / "evidence" / "manifest.json"),
+            }
+            manifest = {"run_id": run_id, "journal_date": journal_date}
+            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False), mock.patch.object(
+                tools, "_pending_run", return_value=pending
+            ), mock.patch.object(
+                tools, "_next_pending_chunk", return_value=None
+            ), mock.patch.object(
+                tools, "_manifest_for_pending", return_value=manifest
+            ), mock.patch.object(
+                tools, "_render_note", return_value="first note\n"
+            ), mock.patch.object(
+                tools, "_script_module", return_value=Validator
+            ), mock.patch.object(
+                tools, "validated_entry_dates", return_value={journal_date}
+            ):
+                result = tools._generation_complete(run_id, journal_date, {})
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(canonical.read_text(encoding="utf-8"), "first note\n")
+            self.assertEqual(state.read_text(encoding="utf-8"), "completed state\n")
+
     def test_generation_subprocess_has_only_dedicated_generation_toolset(self):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
