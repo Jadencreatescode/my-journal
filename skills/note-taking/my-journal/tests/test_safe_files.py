@@ -19,6 +19,24 @@ def load_module():
 
 
 class SafeFileTests(unittest.TestCase):
+    def test_descriptor_path_canonicalizes_standard_macos_root_alias(self):
+        module = load_module()
+
+        with mock.patch("sys.platform", "darwin"), mock.patch.object(
+            module.os.path,
+            "islink",
+            side_effect=lambda value: value == "/var",
+        ) as islink, mock.patch.object(
+            module.os.path,
+            "realpath",
+            side_effect=lambda value: "/private/var" if value == "/var" else value,
+        ) as realpath:
+            canonical = module._canonical_descriptor_path(Path("/var/folders/example/journal"))
+
+        self.assertEqual(canonical, Path("/private/var/folders/example/journal"))
+        islink.assert_called_once_with("/var")
+        realpath.assert_called_once_with("/var")
+
     def test_mkdir_tree_remains_anchored_when_output_root_is_swapped(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

@@ -9,7 +9,8 @@ Corrects macOS installation through system root aliases and the absence of Linux
 1. Resolve only a root level filesystem alias such as macOS `/var` before descriptor traversal.
 2. Bind macOS lifecycle operations to the locked Hermes home through a temporary descriptor based working directory, then restore the caller directory.
 3. Preserve no follow enforcement for every remaining path component.
-4. Run the release tree privacy check before Python tests create cache files.
+4. Share the same macOS root alias normalization across plugin and journal file operations.
+5. Run the release tree privacy check before Python tests create cache files.
 
 ## 0.1.0 alpha 1
 

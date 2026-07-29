@@ -560,18 +560,7 @@ def maintenance() -> dict:
 
 
 def _open_directory(path: Path) -> int:
-    absolute = path.expanduser().absolute()
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(absolute.anchor or "/", flags)
-    try:
-        for part in absolute.parts[1:]:
-            next_descriptor = os.open(part, flags, dir_fd=descriptor)
-            os.close(descriptor)
-            descriptor = next_descriptor
-        return descriptor
-    except Exception:
-        os.close(descriptor)
-        raise
+    return _safe_files.open_directory_fd(path)
 
 
 def purge(confirm: str = "", *, apply: bool = False) -> dict:

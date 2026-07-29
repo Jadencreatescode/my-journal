@@ -6,6 +6,7 @@ import os
 import errno
 import secrets
 import stat
+import sys
 from pathlib import Path
 
 
@@ -13,8 +14,19 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_
 _FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 
 
-def _absolute_parts(path: Path) -> tuple[Path, tuple[str, ...]]:
+def _canonical_descriptor_path(path: Path) -> Path:
     absolute = path.expanduser().absolute()
+    parts = absolute.parts
+    if sys.platform == "darwin" and len(parts) > 1 and parts[1] in {"etc", "tmp", "var"}:
+        root_child = os.path.join(absolute.anchor or "/", parts[1])
+        if os.path.islink(root_child):
+            resolved_root_child = Path(os.path.realpath(root_child))
+            absolute = resolved_root_child.joinpath(*parts[2:])
+    return absolute
+
+
+def _absolute_parts(path: Path) -> tuple[Path, tuple[str, ...]]:
+    absolute = _canonical_descriptor_path(path)
     return Path(absolute.anchor), tuple(absolute.parts[1:])
 
 
@@ -30,6 +42,11 @@ def _open_directory(path: Path) -> int:
     except Exception:
         os.close(descriptor)
         raise
+
+
+def open_directory_fd(path: Path) -> int:
+    """Open one directory through the shared no follow descriptor walk."""
+    return _open_directory(path)
 
 
 def _open_or_create_directory(path: Path, mode: int) -> int:
