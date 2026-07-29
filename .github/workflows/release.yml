@@ -1,0 +1,20 @@
+name: Release verification
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        required: true
+        default: v0.1.0-alpha.1
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 scripts/build_release.py --ref "${{ inputs.ref }}" --output dist
+      - run: python3 scripts/verify_release.py --ref "${{ inputs.ref }}" --archive dist/my-journal-v0.1.0-alpha.1.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: my-journal-v0.1.0-alpha.1
+          path: dist/*

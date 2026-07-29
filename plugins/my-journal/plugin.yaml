@@ -1,0 +1,24 @@
+name: my-journal
+version: 0.1.0-alpha.1
+description: "Deterministic date, validation, status, gap, and backfill tools for the My Journal skill."
+author: Jaden Gibson
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools:
+  - journal_status
+  - journal_resolve_range
+  - journal_read_entries
+  - journal_find_gaps
+  - journal_plan_backfill
+  - journal_setup_inventory
+  - journal_setup_database_approve
+  - journal_daily_workload_check
+  - journal_daily_workload_approve
+  - journal_setup_plan
+  - journal_setup_approve
+  - journal_generation_collect
+  - journal_generation_get_chunk
+  - journal_generation_record_digest
+  - journal_generation_complete

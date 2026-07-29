@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "enabled": false,
+  "timezone": "UTC",
+  "profiles": [],
+  "platforms": [],
+  "excluded_session_ids": [],
+  "database_size_approvals": {},
+  "privacy": {
+    "redact_secrets": true,
+    "pii_mode": "mask",
+    "entropy_mode": "report"
+  },
+  "limits": {
+    "max_message_chars": 4000,
+    "max_tool_chars": 1200,
+    "max_selected_messages": 25000,
+    "max_retained_chars": 4000000,
+    "max_sessions": 2000,
+    "packet_chunk_bytes": 120000,
+    "max_packet_chunks": 64
+  }
+}

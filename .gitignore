@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.db
+*.db-wal
+*.db-shm
+.env
+.venv/
+venv/
+dist/
+build/
+*.tar.gz
+*.zip
+/journal/
+/evidence/
+/runs/
+/pending/
+/backups/
