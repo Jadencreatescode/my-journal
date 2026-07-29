@@ -58,6 +58,46 @@ class InstallerSecurityTests(unittest.TestCase):
         self.assertEqual(canonical, Path("/var/data/home"))
         realpath.assert_not_called()
 
+    def test_macos_lifecycle_lock_anchors_to_cwd_and_restores_caller(self):
+        installer = load_installer()
+        original = os.open(".", os.O_RDONLY)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                home = base / "home"
+                moved = base / "home-moved"
+                home.mkdir()
+                original_home = home.stat()
+
+                with mock.patch("sys.platform", "darwin"):
+                    with installer._lifecycle_lock(home) as locked:
+                        self.assertEqual(locked.anchor, Path("."))
+                        current = os.stat(".")
+                        self.assertEqual(
+                            (current.st_dev, current.st_ino),
+                            (original_home.st_dev, original_home.st_ino),
+                        )
+                        home.rename(moved)
+                        home.mkdir()
+                        descriptor = installer._open_directory_descriptor(Path("."))
+                        try:
+                            anchored = os.fstat(descriptor)
+                        finally:
+                            os.close(descriptor)
+                        self.assertEqual(
+                            (anchored.st_dev, anchored.st_ino),
+                            (original_home.st_dev, original_home.st_ino),
+                        )
+
+                restored = os.stat(".")
+                caller = os.fstat(original)
+                self.assertEqual(
+                    (restored.st_dev, restored.st_ino),
+                    (caller.st_dev, caller.st_ino),
+                )
+        finally:
+            os.close(original)
+
     def test_install_parent_creation_rejects_post_transaction_symlink_without_external_write(self):
         installer = load_installer()
         with tempfile.TemporaryDirectory() as tmp:

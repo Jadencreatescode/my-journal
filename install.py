@@ -120,8 +120,24 @@ def _canonical_descriptor_path(path: Path) -> Path:
 
 
 def _open_directory_descriptor(path: Path) -> int:
-    absolute = _canonical_descriptor_path(path)
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        descriptor = os.open(".", flags)
+        try:
+            for part in expanded.parts:
+                if part in ("", "."):
+                    continue
+                if part == "..":
+                    raise ValueError("relative descriptor path cannot traverse upward")
+                next_descriptor = os.open(part, flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = next_descriptor
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+    absolute = _canonical_descriptor_path(expanded)
     parts = absolute.parts
     if len(parts) >= 5 and parts[:4] == ("/", "proc", "self", "fd") and parts[4].isdigit():
         descriptor = os.dup(int(parts[4]))
@@ -375,13 +391,24 @@ def _remove_metadata(hermes_home: Path, name: str, *, missing_ok: bool = True) -
 def _lifecycle_lock(hermes_home: Path):
     home = _home(hermes_home)
     descriptor = _open_directory_descriptor(home)
+    caller_directory: int | None = None
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise BlockingIOError("another My Journal lifecycle operation is in progress") from None
-        yield _LockedHome(anchor=Path(f"/proc/self/fd/{descriptor}"), display=home)
+        if sys.platform == "darwin":
+            caller_directory = os.open(".", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
+            os.fchdir(descriptor)
+            try:
+                yield _LockedHome(anchor=Path("."), display=home)
+            finally:
+                os.fchdir(caller_directory)
+        else:
+            yield _LockedHome(anchor=Path(f"/proc/self/fd/{descriptor}"), display=home)
     finally:
+        if caller_directory is not None:
+            os.close(caller_directory)
         os.close(descriptor)
 
 
@@ -495,7 +522,8 @@ def _validated_state(raw: object, home: Path) -> list[dict]:
 
 
 def _new_stage(home: Path, action: str) -> Path:
-    stage = Path(tempfile.mkdtemp(prefix=f".my-journal-{action}-", dir=home))
+    created = Path(tempfile.mkdtemp(prefix=f".my-journal-{action}-", dir=home))
+    stage = home / created.name
     home_fd = _open_directory_descriptor(home)
     try:
         os.fsync(home_fd)
