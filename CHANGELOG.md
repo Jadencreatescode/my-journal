@@ -2,7 +2,7 @@
 
 ## 0.1.0 alpha 2
 
-Corrects macOS installation through system root aliases and the absence of Linux `/proc` descriptor paths while preserving descriptor anchored rejection of deeper symlinks. CI now checks the clean release tree before test caches are created.
+Corrects macOS installation through system root aliases and the absence of Linux `/proc` descriptor paths while preserving descriptor anchored rejection of deeper symlinks. It also corrects first canonical publication after owner acceptance testing. CI checks the clean release tree before test caches are created.
 
 ### Fixed
 
@@ -11,6 +11,8 @@ Corrects macOS installation through system root aliases and the absence of Linux
 3. Preserve no follow enforcement for every remaining path component.
 4. Share the same macOS root alias normalization across plugin and journal file operations and trust path validation.
 5. Run the release tree privacy check before Python tests create cache files.
+6. Create owned `notes/YYYY/MM` and `state` directories through descriptor anchored safe filesystem operations during first canonical publication.
+7. Cover first publication into a fresh journal root with a regression test.
 
 ## 0.1.0 alpha 1
 
