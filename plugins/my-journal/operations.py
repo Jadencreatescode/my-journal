@@ -16,7 +16,7 @@ from datetime import date
 from pathlib import Path
 
 from .core import _safe_files, journal_status, validated_entry_dates
-from .tools import _missing_days, journal_root
+from .tools import _completion_evidence_valid, _missing_days, _pending_for_date, journal_root
 
 
 PURGE_DIRECTORIES = (
@@ -326,17 +326,29 @@ def run_generation(request: str, *, expected_dates: list[str]) -> dict:
             else set()
         )
         missing = [value for value in expected_dates if value not in available]
-        ok = completed.returncode == 0 and not missing
-        error = completed.stderr.strip() or None
-        if completed.returncode == 0 and missing:
+        active_pending = [
+            value for value in expected_dates if _pending_for_date(value) is not None
+        ]
+        ok = completed.returncode == 0 and not missing and not active_pending
+        error = None
+        if completed.returncode != 0:
+            error = completed.stderr.strip() or "journal generation process failed"
+        elif missing:
             error = "generation finished without validated canonical entries for: " + ", ".join(missing)
-        ledger.update({"status": "completed" if ok else "failed", "missing_dates": missing})
+        elif active_pending:
+            error = "generation finished with active pending work for: " + ", ".join(active_pending)
+        ledger.update({
+            "status": "completed" if ok else "failed",
+            "missing_dates": missing,
+            "active_pending_dates": active_pending,
+        })
         _safe_files.safe_atomic_write_text(root, ledger_path, json.dumps(ledger, indent=2) + "\n")
         return {
             "ok": ok,
             "request_id": request_id,
             "exit_code": completed.returncode,
             "missing_dates": missing,
+            "active_pending_dates": active_pending,
             "output": completed.stdout.strip(),
             "error": error,
         }
@@ -555,7 +567,13 @@ def maintenance() -> dict:
     pending = root / "pending"
     pending_count = 0
     if pending.is_dir() and not pending.is_symlink():
-        pending_count = sum(1 for item in pending.iterdir() if item.is_file() and not item.is_symlink())
+        pending_count = sum(
+            1
+            for item in pending.iterdir()
+            if item.is_file()
+            and not item.is_symlink()
+            and not _completion_evidence_valid(root, item)
+        )
     return {**status, "pending_run_count": pending_count}
 
 
