@@ -42,7 +42,7 @@ class UnsafePathError(ValueError):
 
 
 def reject_symlink_components(path: Path) -> None:
-    absolute = path.expanduser().absolute()
+    absolute = _safe_files._canonical_descriptor_path(path)
     current = Path(absolute.anchor)
     for part in absolute.parts[1:]:
         current = current / part

@@ -71,6 +71,23 @@ class EntryDiscoveryTests(unittest.TestCase):
     def setUp(self):
         self.core = load_core()
 
+    def test_root_symlink_validation_uses_shared_canonical_path(self):
+        requested = Path("/var/folders/example/journal")
+        canonical = Path("/private/var/folders/example/journal")
+
+        def fake_lstat(path):
+            mode = 0o120777 if str(path) == "/var" else 0o040755
+            return os.stat_result((mode, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+        with mock.patch.object(
+            self.core._safe_files,
+            "_canonical_descriptor_path",
+            return_value=canonical,
+        ) as canonicalize, mock.patch.object(Path, "lstat", fake_lstat):
+            self.core.reject_symlink_components(requested)
+
+        canonicalize.assert_called_once_with(requested)
+
     def test_validator_source_remains_anchored_during_directory_swap(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
