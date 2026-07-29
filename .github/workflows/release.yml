@@ -4,7 +4,7 @@ on:
     inputs:
       ref:
         required: true
-        default: v0.1.0-alpha.1
+        default: v0.1.0-alpha.2
 jobs:
   archive:
     runs-on: ubuntu-latest
@@ -13,8 +13,8 @@ jobs:
         with:
           fetch-depth: 0
       - run: python3 scripts/build_release.py --ref "${{ inputs.ref }}" --output dist
-      - run: python3 scripts/verify_release.py --ref "${{ inputs.ref }}" --archive dist/my-journal-v0.1.0-alpha.1.tar.gz
+      - run: python3 scripts/verify_release.py --ref "${{ inputs.ref }}" --archive dist/my-journal-v0.1.0-alpha.2.tar.gz
       - uses: actions/upload-artifact@v4
         with:
-          name: my-journal-v0.1.0-alpha.1
+          name: my-journal-v0.1.0-alpha.2
           path: dist/*

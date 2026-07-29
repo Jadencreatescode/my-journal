@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0 alpha 2
+
+Corrects macOS installation through the system root aliases used by temporary directories while preserving descriptor anchored rejection of deeper symlinks. CI now checks the clean release tree before test caches are created.
+
+### Fixed
+
+1. Resolve only a root level filesystem alias such as macOS `/var` before descriptor traversal.
+2. Preserve no follow enforcement for every remaining path component.
+3. Run the release tree privacy check before Python tests create cache files.
+
 ## 0.1.0 alpha 1
 
 Initial public alpha of the evidence backed activity journal for Hermes.

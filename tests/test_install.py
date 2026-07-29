@@ -23,6 +23,41 @@ def load_installer():
 
 
 class InstallerSecurityTests(unittest.TestCase):
+    def test_descriptor_path_canonicalizes_only_root_alias(self):
+        installer = load_installer()
+
+        with mock.patch("sys.platform", "darwin"), mock.patch.object(
+            installer.os.path,
+            "islink",
+            side_effect=lambda value: value == "/var",
+        ) as islink, mock.patch.object(
+            installer.os.path,
+            "realpath",
+            side_effect=lambda value: "/private/var" if value == "/var" else value,
+        ) as realpath:
+            canonical = installer._canonical_descriptor_path(Path("/var/folders/example/home"))
+
+        self.assertEqual(canonical, Path("/private/var/folders/example/home"))
+        islink.assert_called_once_with("/var")
+        realpath.assert_called_once_with("/var")
+
+    def test_descriptor_path_does_not_follow_root_alias_outside_macos(self):
+        installer = load_installer()
+
+        with mock.patch("sys.platform", "linux"), mock.patch.object(
+            installer.os.path,
+            "islink",
+            return_value=True,
+        ), mock.patch.object(
+            installer.os.path,
+            "realpath",
+            return_value="/external/var",
+        ) as realpath:
+            canonical = installer._canonical_descriptor_path(Path("/var/data/home"))
+
+        self.assertEqual(canonical, Path("/var/data/home"))
+        realpath.assert_not_called()
+
     def test_install_parent_creation_rejects_post_transaction_symlink_without_external_write(self):
         installer = load_installer()
         with tempfile.TemporaryDirectory() as tmp:

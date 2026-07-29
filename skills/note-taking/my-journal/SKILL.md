@@ -1,7 +1,7 @@
 ---
 name: my-journal
 description: Use when creating, updating, reviewing, or automating a dated progression journal from explicitly authorized Hermes profiles and platforms. Produces evidence backed daily work records, project progression, decisions, verified changes, blockers, open threads, and automation activity without treating the journal as prompt memory.
-version: 0.1.0-alpha.1
+version: 0.1.0-alpha.2
 author: Jaden Gibson
 license: MIT
 platforms: [linux, macos]

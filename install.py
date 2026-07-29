@@ -13,6 +13,7 @@ import re
 import secrets
 import shutil
 import stat
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -107,8 +108,19 @@ def _reject_symlink_chain(hermes_home: Path, destination: Path) -> None:
         os.close(descriptor)
 
 
-def _open_directory_descriptor(path: Path) -> int:
+def _canonical_descriptor_path(path: Path) -> Path:
     absolute = path.expanduser().absolute()
+    parts = absolute.parts
+    if sys.platform == "darwin" and len(parts) > 1 and parts[1] in {"etc", "tmp", "var"}:
+        root_child = os.path.join(absolute.anchor or "/", parts[1])
+        if os.path.islink(root_child):
+            resolved_root_child = Path(os.path.realpath(root_child))
+            absolute = resolved_root_child.joinpath(*parts[2:])
+    return absolute
+
+
+def _open_directory_descriptor(path: Path) -> int:
+    absolute = _canonical_descriptor_path(path)
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     parts = absolute.parts
     if len(parts) >= 5 and parts[:4] == ("/", "proc", "self", "fd") and parts[4].isdigit():
