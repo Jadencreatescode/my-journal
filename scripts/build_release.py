@@ -7,7 +7,7 @@ import subprocess
 import tarfile
 from pathlib import Path
 
-VERSION = "0.1.0-alpha.4"
+VERSION = "0.1.0-alpha.5"
 PREFIX = f"my-journal-v{VERSION}/"
 ARCHIVE_NAME = f"my-journal-v{VERSION}.tar.gz"
 

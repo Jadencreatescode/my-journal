@@ -2,7 +2,7 @@
 
 **The evidence backed activity journal for Hermes.**
 
-My Journal `0.1.0-alpha.4` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines guided first use, bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, 11 deterministic journal tools, four restricted generation tools, and the scriptable `hermes journal` command family.
+My Journal `0.1.0-alpha.5` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines guided first use, bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, 11 deterministic journal tools, four restricted generation tools, and the scriptable `hermes journal` command family.
 
 This is an alpha. Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` before enabling collection.
 
@@ -22,7 +22,7 @@ Markdown under `journal/notes/YYYY/MM/YYYY-MM-DD.md` is canonical. Semantic stor
 3. A Hermes Agent installation with skills, standalone plugins, native cron management, and noninteractive chat.
 4. An IANA timezone available through Python `zoneinfo`.
 
-Native Windows support is not claimed.
+Ubuntu under WSL is supported as a Linux environment. Native Windows support is not claimed.
 
 ## Install
 
@@ -231,8 +231,8 @@ python3 -m unittest discover -s skills/note-taking/my-journal/tests -v
 The deterministic release archive is built only from a Git reference:
 
 ```text
-python3 scripts/build_release.py --ref v0.1.0-alpha.4 --output dist
-python3 scripts/verify_release.py --ref v0.1.0-alpha.4 --archive dist/my-journal-v0.1.0-alpha.4.tar.gz
+python3 scripts/build_release.py --ref v0.1.0-alpha.5 --output dist
+python3 scripts/verify_release.py --ref v0.1.0-alpha.5 --archive dist/my-journal-v0.1.0-alpha.5.tar.gz
 ```
 
 See `CONTRIBUTING.md`, `COMPATIBILITY.md`, and `CHANGELOG.md` for the complete alpha boundary.

@@ -2,7 +2,7 @@
 
 ## Supported
 
-1. Linux and macOS.
+1. Linux and macOS. Ubuntu under WSL is supported as a Linux environment.
 2. Python 3.11, 3.12, and 3.13.
 3. Hermes Agent installations that expose standalone plugins, skills, native cron management, and the noninteractive `hermes chat` command.
 4. IANA timezones available through Python `zoneinfo`.

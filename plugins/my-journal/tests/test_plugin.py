@@ -293,6 +293,54 @@ class PluginRegistrationTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["active_pending_dates"], [journal_date])
 
+    def test_generation_success_fails_closed_when_pending_root_is_regular_file(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        completed = type("Completed", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pending").write_text("unsafe\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False), mock.patch.object(
+                operations, "_hermes_executable", return_value="/hermes"
+            ), mock.patch.object(
+                operations.subprocess, "run", return_value=completed
+            ), mock.patch.object(
+                operations, "validated_entry_dates", return_value={journal_date}
+            ):
+                result = operations.run_generation(
+                    f"Generate journal date {journal_date}.", expected_dates=[journal_date]
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["active_pending_dates"], [journal_date])
+
+    def test_active_pending_enumeration_stays_bound_to_directory_descriptor(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        run_id = "c" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pending").mkdir()
+            packet_path = root / "packets" / "chunk.md"
+            receipt = {
+                "run_id": run_id,
+                "journal_date": journal_date,
+                "manifest_path": str(root / "evidence" / "manifest.json"),
+                "packet_path": str(packet_path),
+                "packet_paths": [str(packet_path)],
+                "packet_plan_path": str(root / "packets" / "plan.json"),
+                "status": "pending_note_validation",
+            }
+            (root / "pending" / f"{run_id}.json").write_text(
+                json.dumps(receipt) + "\n", encoding="utf-8"
+            )
+            with mock.patch.object(Path, "iterdir", side_effect=AssertionError("path enumeration used")):
+                result = operations._active_pending_dates(root, [journal_date])
+
+        self.assertEqual(result, [journal_date])
+
     def test_malicious_packet_is_structured_untrusted_data_and_cannot_add_tools(self):
         plugin = load_plugin()
         tools = sys.modules[f"{plugin.__name__}.tools"]
@@ -327,6 +375,32 @@ class PluginRegistrationTests(unittest.TestCase):
             )
         self.assertIn("error", result)
         self.assertIn("chunk 2", result["error"])
+
+    def test_pending_resume_rejects_incomplete_receipt(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        run_id = "d" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pending").mkdir()
+            (root / "pending" / f"{run_id}.json").write_text(
+                json.dumps({"run_id": run_id, "journal_date": journal_date}) + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False):
+                with self.assertRaisesRegex(ValueError, "missing manifest_path"):
+                    tools._pending_for_date(journal_date)
+
+    def test_pending_resume_rejects_unsafe_pending_root(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pending").write_text("unsafe\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False):
+                with self.assertRaisesRegex(ValueError, "pending directory is unsafe"):
+                    tools._pending_for_date("2026-07-27")
 
     def test_cron_job_pins_generation_skill_and_toolset_without_mcp(self):
         plugin = load_plugin()
@@ -427,8 +501,59 @@ class PluginRegistrationTests(unittest.TestCase):
             root = Path(tmp)
             (root / "pending").mkdir()
             (root / "state").mkdir()
+            (root / "evidence").mkdir()
+            manifest_path = root / "evidence" / f"{journal_date}-{run_id}.json"
+            packet_path = root / "packets" / journal_date / run_id / "chunk-000001.md"
+            packet_plan_path = packet_path.parent / "plan.json"
+            coverage = {"database_count": 1, "session_count": 1, "message_count": 1}
+            receipt = {
+                "run_id": run_id,
+                "journal_date": journal_date,
+                "manifest_path": str(manifest_path),
+                "packet_path": str(packet_path),
+                "packet_paths": [str(packet_path)],
+                "packet_plan_path": str(packet_plan_path),
+                "status": "pending_note_validation",
+            }
+            manifest_path.write_text(
+                json.dumps({"run_id": run_id, "journal_date": journal_date, "coverage": coverage}) + "\n",
+                encoding="utf-8",
+            )
             pending_path = root / "pending" / f"{run_id}.json"
-            pending_path.write_text(
+            pending_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+            state = {
+                "status": "completed",
+                "journal_date": journal_date,
+                "run_id": run_id,
+                "manifest_path": str(manifest_path),
+                "note_path": str(root / "notes" / "2026" / "07" / f"{journal_date}.md"),
+                "digest_dir": str(root / "runs" / run_id / "digests"),
+                "coverage": coverage,
+                "validated_at": "2026-07-28T00:00:00+00:00",
+            }
+            (root / "state" / f"{journal_date}-{run_id}.json").write_text(
+                json.dumps(state) + "\n", encoding="utf-8"
+            )
+            with mock.patch.object(operations, "journal_root", return_value=root), mock.patch.object(
+                operations, "journal_status", return_value={"entry_count": 1}
+            ), mock.patch.object(
+                operations, "validated_entry_dates", return_value={journal_date}
+            ):
+                result = operations.maintenance()
+                self.assertTrue(pending_path.exists())
+
+        self.assertEqual(result["pending_run_count"], 0)
+
+    def test_maintenance_counts_incomplete_retained_receipt_as_pending(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        run_id = "a" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pending").mkdir()
+            (root / "state").mkdir()
+            (root / "pending" / f"{run_id}.json").write_text(
                 json.dumps({"run_id": run_id, "journal_date": journal_date}) + "\n",
                 encoding="utf-8",
             )
@@ -442,9 +567,45 @@ class PluginRegistrationTests(unittest.TestCase):
                 operations, "validated_entry_dates", return_value={journal_date}
             ):
                 result = operations.maintenance()
-                self.assertTrue(pending_path.exists())
 
-        self.assertEqual(result["pending_run_count"], 0)
+        self.assertEqual(result["pending_run_count"], 1)
+
+    def test_maintenance_counts_incomplete_completion_state_as_pending(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        run_id = "b" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pending").mkdir()
+            (root / "state").mkdir()
+            manifest_path = root / "evidence" / "manifest.json"
+            packet_path = root / "packets" / "chunk.md"
+            packet_plan_path = root / "packets" / "plan.json"
+            receipt = {
+                "run_id": run_id,
+                "journal_date": journal_date,
+                "manifest_path": str(manifest_path),
+                "packet_path": str(packet_path),
+                "packet_paths": [str(packet_path)],
+                "packet_plan_path": str(packet_plan_path),
+                "status": "pending_note_validation",
+            }
+            (root / "pending" / f"{run_id}.json").write_text(
+                json.dumps(receipt) + "\n", encoding="utf-8"
+            )
+            (root / "state" / f"{journal_date}-{run_id}.json").write_text(
+                json.dumps({"status": "completed", "journal_date": journal_date, "run_id": run_id}) + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(operations, "journal_root", return_value=root), mock.patch.object(
+                operations, "journal_status", return_value={"entry_count": 1}
+            ), mock.patch.object(
+                operations, "validated_entry_dates", return_value={journal_date}
+            ):
+                result = operations.maintenance()
+
+        self.assertEqual(result["pending_run_count"], 1)
 
     def test_cli_registers_generation_backfill_cron_and_maintenance_commands(self):
         plugin = load_plugin()

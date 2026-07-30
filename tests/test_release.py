@@ -37,7 +37,7 @@ def create_repo(root: Path) -> str:
         "README.md": "release fixture\n",
         "LICENSE": "MIT\n",
         "install.py": "print('fixture')\n",
-        "plugins/my-journal/plugin.yaml": "version: 0.1.0-alpha.4\n",
+        "plugins/my-journal/plugin.yaml": "version: 0.1.0-alpha.5\n",
         "plugins/my-journal/__init__.py": "VALUE = 1\n",
         "plugins/my-journal/onboarding.py": "VALUE = 1\n",
         "plugins/my-journal/tests/test_onboarding.py": "# onboarding tests\n",
@@ -55,20 +55,26 @@ def create_repo(root: Path) -> str:
 
 
 class ReleaseToolTests(unittest.TestCase):
-    def test_alpha_four_version_metadata_is_synchronized(self):
+    def test_alpha_five_version_metadata_and_wsl_support_are_synchronized(self):
         builder = load_script("build_release")
-        self.assertEqual(builder.VERSION, "0.1.0-alpha.4")
+        self.assertEqual(builder.VERSION, "0.1.0-alpha.5")
         expected = {
-            "pyproject.toml": ("version = \"0.1.0a4\"", "release = \"0.1.0-alpha.4\""),
-            "plugins/my-journal/plugin.yaml": ("version: 0.1.0-alpha.4",),
-            "skills/note-taking/journal/SKILL.md": ("version: 0.1.0-alpha.4",),
-            "skills/note-taking/my-journal/SKILL.md": ("version: 0.1.0-alpha.4",),
+            "pyproject.toml": ("version = \"0.1.0a5\"", "release = \"0.1.0-alpha.5\""),
+            "plugins/my-journal/plugin.yaml": ("version: 0.1.0-alpha.5",),
+            "skills/note-taking/journal/SKILL.md": ("version: 0.1.0-alpha.5",),
+            "skills/note-taking/my-journal/SKILL.md": ("version: 0.1.0-alpha.5",),
             ".github/workflows/release.yml": (
-                "default: v0.1.0-alpha.4",
-                "my-journal-v0.1.0-alpha.4.tar.gz",
+                "default: v0.1.0-alpha.5",
+                'test "$RELEASE_REF" = "v0.1.0-alpha.5"',
+                "my-journal-v0.1.0-alpha.5.tar.gz",
             ),
-            "README.md": ("My Journal `0.1.0-alpha.4`", "--ref v0.1.0-alpha.4"),
-            "SECURITY.md": ("`0.1.0-alpha.4`",),
+            "README.md": (
+                "My Journal `0.1.0-alpha.5`",
+                "Ubuntu under WSL is supported as a Linux environment",
+                "--ref v0.1.0-alpha.5",
+            ),
+            "COMPATIBILITY.md": ("Ubuntu under WSL is supported as a Linux environment",),
+            "SECURITY.md": ("`0.1.0-alpha.5`",),
         }
         for relative, fragments in expected.items():
             content = (ROOT / relative).read_text(encoding="utf-8")
@@ -142,7 +148,7 @@ class ReleaseToolTests(unittest.TestCase):
             with tarfile.open(first, "r:gz") as opened:
                 names = [member.name for member in opened.getmembers()]
             self.assertEqual(names, sorted(names))
-            root_name = "my-journal-v0.1.0-alpha.4"
+            root_name = "my-journal-v0.1.0-alpha.5"
             self.assertTrue(
                 all(name == root_name or name.startswith(root_name + "/") for name in names)
             )

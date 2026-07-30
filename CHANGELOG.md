@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0 alpha 5
+
+Corrects fail closed pending run inspection after independent review of the public alpha 4 candidate and records the verified Ubuntu under WSL support boundary.
+
+### Fixed
+
+1. Treat an unsafe pending root as active or invalid instead of silently reporting no pending work.
+2. Enumerate pending receipts through a held directory descriptor without reopening the path.
+3. Validate one strict production receipt schema across generation resume, completion classification, and maintenance.
+4. Require complete state, manifest, canonical note, digest directory, coverage, and validation timestamp linkage before classifying a retained receipt as completed.
+5. Document Ubuntu under WSL as supported while continuing to exclude native Windows.
+
 ## 0.1.0 alpha 4
 
 Reconciles the public macOS hardened release line with the owner accepted alpha 3 installer repair and tightens completed run reporting before public publication.

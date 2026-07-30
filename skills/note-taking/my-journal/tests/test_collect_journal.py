@@ -13,10 +13,20 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "collect_journal.py"
+PLUGIN_CORE = Path(__file__).resolve().parents[4] / "plugins" / "my-journal" / "core.py"
 
 
 def load_module():
     spec = importlib.util.spec_from_file_location("collect_journal", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_plugin_core():
+    spec = importlib.util.spec_from_file_location("journal_plugin_core_contract", PLUGIN_CORE)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -824,7 +834,12 @@ class CollectionTests(unittest.TestCase):
 
             packet_paths = [Path(value) for value in result["packet_paths"]]
             self.assertGreater(len(packet_paths), 1)
-            self.assertIsNone(result["packet_path"])
+            self.assertEqual(result["packet_path"], str(packet_paths[0]))
+            pending = json.loads(Path(result["pending_path"]).read_text(encoding="utf-8"))
+            load_plugin_core().validate_pending_receipt(
+                pending,
+                expected_run_id=result["run_id"],
+            )
             self.assertTrue(all(path.stat().st_size <= 1400 for path in packet_paths))
             plan = json.loads(Path(result["packet_plan_path"]).read_text(encoding="utf-8"))
             manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
@@ -1027,6 +1042,11 @@ class CollectionTests(unittest.TestCase):
             packet_path = Path(result["packet_path"])
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(packet_path.is_file())
+            pending = json.loads(Path(result["pending_path"]).read_text(encoding="utf-8"))
+            load_plugin_core().validate_pending_receipt(
+                pending,
+                expected_run_id=result["run_id"],
+            )
             packet = packet_path.read_text(encoding="utf-8")
             self.assertIn("First session", packet)
             self.assertIn("Second session", packet)

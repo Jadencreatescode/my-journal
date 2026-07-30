@@ -24,6 +24,84 @@ _LAST_DAYS = re.compile(r"^\s*last\s+(\d+)\s+days?\s*$", re.IGNORECASE)
 _MAX_NOTE_BYTES = 8_000_000
 _MAX_MANIFEST_BYTES = 8_000_000
 _MAX_DIGEST_BYTES = 1_000_000
+_RUN_ID = re.compile(r"^[0-9a-f]{16}$")
+_PENDING_RECEIPT_FILE = re.compile(r"^[0-9a-f]{16}\.json$")
+_MAX_PENDING_RUNS = 4096
+_PENDING_RECEIPT_FIELDS = frozenset(
+    {
+        "run_id",
+        "journal_date",
+        "manifest_path",
+        "packet_path",
+        "packet_paths",
+        "packet_plan_path",
+        "status",
+    }
+)
+
+
+def validate_pending_receipt(value: Any, *, expected_run_id: str | None = None) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("pending run receipt is malformed")
+    missing = sorted(_PENDING_RECEIPT_FIELDS - set(value))
+    if missing:
+        raise ValueError(f"pending run receipt is missing {missing[0]}")
+    unexpected = sorted(set(value) - _PENDING_RECEIPT_FIELDS)
+    if unexpected:
+        raise ValueError(f"pending run receipt has unexpected fields: {', '.join(unexpected)}")
+    run_id = value.get("run_id")
+    if not isinstance(run_id, str) or _RUN_ID.fullmatch(run_id) is None:
+        raise ValueError("pending run receipt has an invalid run_id")
+    if expected_run_id is not None and run_id != expected_run_id:
+        raise ValueError("pending run receipt does not match its filename")
+    journal_date = value.get("journal_date")
+    if not isinstance(journal_date, str):
+        raise ValueError("pending run receipt is missing journal_date")
+    parsed = date.fromisoformat(journal_date)
+    if parsed.isoformat() != journal_date:
+        raise ValueError("pending run receipt has an invalid journal_date")
+    for field in ("manifest_path", "packet_path", "packet_plan_path"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            raise ValueError(f"pending run receipt is missing {field}")
+    if value.get("status") != "pending_note_validation":
+        raise ValueError("pending run receipt has an invalid status")
+    packet_paths = value.get("packet_paths")
+    if not isinstance(packet_paths, list) or not packet_paths or any(
+        not isinstance(path, str) or not path for path in packet_paths
+    ):
+        raise ValueError("pending run receipt has invalid packet_paths")
+    if value["packet_path"] != packet_paths[0]:
+        raise ValueError("pending run receipt packet_path must equal first packet_paths item")
+    return value
+
+
+def validate_completed_state(value: Any, receipt: dict[str, Any], root: Path) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("completed run state is malformed")
+    run_id = receipt["run_id"]
+    journal_date = receipt["journal_date"]
+    if value.get("status") != "completed":
+        raise ValueError("completed run state has an invalid status")
+    if value.get("run_id") != run_id or value.get("journal_date") != journal_date:
+        raise ValueError("completed run state does not match its receipt")
+    if value.get("manifest_path") != receipt["manifest_path"]:
+        raise ValueError("completed run state does not match its manifest")
+    year, month, _ = journal_date.split("-")
+    expected_note = root / "notes" / year / month / f"{journal_date}.md"
+    if value.get("note_path") != str(expected_note):
+        raise ValueError("completed run state does not match its canonical note")
+    expected_digest_dir = root / "runs" / run_id / "digests"
+    if value.get("digest_dir") != str(expected_digest_dir):
+        raise ValueError("completed run state does not match its digest directory")
+    if not isinstance(value.get("coverage"), dict):
+        raise ValueError("completed run state is missing coverage")
+    validated_at = value.get("validated_at")
+    if not isinstance(validated_at, str) or not validated_at:
+        raise ValueError("completed run state is missing validated_at")
+    timestamp = datetime.fromisoformat(validated_at)
+    if timestamp.tzinfo is None:
+        raise ValueError("completed run state validated_at must include a timezone")
+    return value
 
 _SAFE_FILES_PATH = (
     Path(__file__).resolve().parents[2]
@@ -35,6 +113,67 @@ if _safe_spec is None or _safe_spec.loader is None:
 _safe_files = importlib.util.module_from_spec(_safe_spec)
 sys.modules[_safe_spec.name] = _safe_files
 _safe_spec.loader.exec_module(_safe_files)
+
+
+def _read_descriptor_json(descriptor: int, name: str, *, max_bytes: int) -> dict[str, Any]:
+    file_descriptor = os.open(
+        name,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=descriptor,
+    )
+    try:
+        metadata = os.fstat(file_descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > max_bytes:
+            raise ValueError("pending run receipt is unsafe")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(file_descriptor, min(65536, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError("pending run receipt exceeds compiled size ceiling")
+        value = json.loads(b"".join(chunks).decode("utf-8"))
+    finally:
+        os.close(file_descriptor)
+    if not isinstance(value, dict):
+        raise ValueError("pending run receipt is malformed")
+    return value
+
+
+def read_pending_receipts(root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    root_descriptor: int | None = None
+    pending_descriptor: int | None = None
+    try:
+        root_descriptor = _safe_files.open_directory_fd(root)
+        try:
+            pending_descriptor = os.open(
+                "pending",
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=root_descriptor,
+            )
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            raise ValueError("journal pending directory is unsafe") from exc
+        names = sorted(os.listdir(pending_descriptor))
+        if len(names) > _MAX_PENDING_RUNS:
+            raise ValueError("pending run count exceeds compiled ceiling")
+        receipts: list[tuple[Path, dict[str, Any]]] = []
+        for name in names:
+            if _PENDING_RECEIPT_FILE.fullmatch(name) is None:
+                raise ValueError("pending run directory contains an unsafe receipt")
+            value = _read_descriptor_json(pending_descriptor, name, max_bytes=100_000)
+            receipts.append((root / "pending" / name, value))
+        return receipts
+    finally:
+        if pending_descriptor is not None:
+            os.close(pending_descriptor)
+        if root_descriptor is not None:
+            os.close(root_descriptor)
 
 
 class UnsafePathError(ValueError):

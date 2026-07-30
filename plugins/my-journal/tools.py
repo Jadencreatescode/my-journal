@@ -11,7 +11,15 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from .core import _safe_files, journal_status, read_validated_entries, resolve_date_range, validated_entry_dates
+from .core import (
+    _safe_files,
+    journal_status,
+    read_pending_receipts,
+    read_validated_entries,
+    resolve_date_range,
+    validate_pending_receipt,
+    validated_entry_dates,
+)
 from .onboarding import (
     approve_database_size,
     approve_daily_workload,
@@ -250,29 +258,15 @@ def _pending_run(run_id: str) -> dict[str, Any]:
     root = journal_root().expanduser().absolute()
     path = root / "pending" / f"{run_id}.json"
     value = json.loads(_safe_files.safe_read_text(root, path, max_bytes=100_000))
-    if not isinstance(value, dict) or value.get("run_id") != run_id:
-        raise ValueError("pending run receipt is malformed")
-    for field in ("journal_date", "manifest_path", "packet_plan_path"):
-        if not isinstance(value.get(field), str) or not value[field]:
-            raise ValueError(f"pending run receipt is missing {field}")
-    _validated_day(value["journal_date"])
-    return value
+    return validate_pending_receipt(value, expected_run_id=run_id)
 
 
 def _pending_for_date(journal_date: str) -> dict[str, Any] | None:
     root = journal_root().expanduser().absolute()
-    pending = root / "pending"
-    if not pending.is_dir() or pending.is_symlink():
-        return None
-    paths = sorted(pending.glob("*.json"))
-    if len(paths) > _MAX_PENDING_RUNS:
-        raise ValueError("pending run count exceeds compiled ceiling")
     matches: list[dict[str, Any]] = []
-    for path in paths:
-        if path.is_symlink() or _RUN_ID.fullmatch(path.stem) is None:
-            raise ValueError("pending run directory contains an unsafe receipt")
-        value = json.loads(_safe_files.safe_read_text(root, path, max_bytes=100_000))
-        if isinstance(value, dict) and value.get("journal_date") == journal_date:
+    for path, value in read_pending_receipts(root):
+        value = validate_pending_receipt(value, expected_run_id=path.stem)
+        if value.get("journal_date") == journal_date:
             matches.append(value)
     if len(matches) > 1:
         raise ValueError("multiple pending collection runs exist for journal date")
