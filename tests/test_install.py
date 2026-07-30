@@ -551,6 +551,144 @@ class InstallerSecurityTests(unittest.TestCase):
             # Restored components remain managed so a later uninstall is safe.
             self.assertTrue(state_path.is_file())
 
+    def test_upgrade_backups_are_outside_plugin_and_skill_discovery_roots(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            for _, target in installer.COMPONENTS:
+                destination = home / target
+                destination.mkdir(parents=True)
+                (destination / "original.txt").write_text("original", encoding="utf-8")
+
+            installer.install(ROOT, home, upgrade=True)
+
+            state = json.loads(
+                (home / ".my-journal" / "install-state.json").read_text(encoding="utf-8")
+            )
+            backup_root = Path(".my-journal/backups")
+            for component in state["components"]:
+                backup = Path(component["backup"])
+                self.assertEqual(backup.parent, backup_root)
+                self.assertTrue((home / backup).is_dir())
+            self.assertEqual(
+                [path.name for path in (home / "plugins").iterdir()],
+                ["my-journal"],
+            )
+            self.assertEqual(
+                sorted(path.name for path in (home / "skills" / "note-taking").iterdir()),
+                ["journal", "my-journal"],
+            )
+
+    def test_upgrade_removes_legacy_discoverable_backups_after_commit(self):
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            stamp = "20260729T000000Z-deadbeef"
+            components = []
+            legacy_backups = []
+            for _, target in installer.COMPONENTS:
+                destination = home / target
+                destination.mkdir(parents=True)
+                (destination / "current.txt").write_text("current", encoding="utf-8")
+                backup_relative = target.with_name(f"{target.name}.backup-{stamp}")
+                backup = home / backup_relative
+                installer.shutil.copytree(destination, backup)
+                (backup / "current.txt").write_text("legacy", encoding="utf-8")
+                legacy_backups.append(backup)
+                components.append(
+                    {
+                        "destination": target.as_posix(),
+                        "backup": backup_relative.as_posix(),
+                        "installed_sha256": installer._tree_sha256(destination),
+                    }
+                )
+            installer._write_state(home, {"schema_version": 1, "components": components})
+
+            installer.install(ROOT, home, upgrade=True)
+
+            self.assertTrue(all(not backup.exists() for backup in legacy_backups))
+            state = installer._read_json(
+                home, installer._STATE, missing_message="missing state"
+            )
+            self.assertTrue(
+                all(
+                    Path(component["backup"]).parent == Path(".my-journal/backups")
+                    for component in state["components"]
+                )
+            )
+            installer.restore(home)
+            for _, target in installer.COMPONENTS:
+                self.assertEqual(
+                    (home / target / "current.txt").read_text(encoding="utf-8"),
+                    "current",
+                )
+
+    def test_recovery_finishes_legacy_backup_cleanup_after_committed_upgrade(self):
+        installer = load_installer()
+
+        class SimulatedProcessDeath(BaseException):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            stamp = "20260729T000000Z-deadbeef"
+            components = []
+            legacy_backups = []
+            for _, target in installer.COMPONENTS:
+                destination = home / target
+                destination.mkdir(parents=True)
+                (destination / "current.txt").write_text("current", encoding="utf-8")
+                backup_relative = target.with_name(f"{target.name}.backup-{stamp}")
+                backup = home / backup_relative
+                installer.shutil.copytree(destination, backup)
+                (backup / "current.txt").write_text("legacy", encoding="utf-8")
+                legacy_backups.append(backup)
+                components.append(
+                    {
+                        "destination": target.as_posix(),
+                        "backup": backup_relative.as_posix(),
+                        "installed_sha256": installer._tree_sha256(destination),
+                    }
+                )
+            installer._write_state(home, {"schema_version": 1, "components": components})
+            real_cleanup = installer._remove_state_backups
+            calls = 0
+
+            def die_before_legacy_cleanup(target_home, raw):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise SimulatedProcessDeath()
+                return real_cleanup(target_home, raw)
+
+            with mock.patch.object(
+                installer, "_remove_state_backups", side_effect=die_before_legacy_cleanup
+            ):
+                with self.assertRaises(SimulatedProcessDeath):
+                    installer.install(ROOT, home, upgrade=True)
+
+            transaction_path = home / ".my-journal" / "install-transaction.json"
+            self.assertTrue(transaction_path.is_file())
+            self.assertTrue(all(backup.is_dir() for backup in legacy_backups))
+
+            installer.recover(home)
+
+            self.assertFalse(transaction_path.exists())
+            self.assertTrue(all(not backup.exists() for backup in legacy_backups))
+            self.assertEqual(
+                [path.name for path in (home / "plugins").iterdir()],
+                ["my-journal"],
+            )
+            installer.restore(home)
+            for _, target in installer.COMPONENTS:
+                self.assertEqual(
+                    (home / target / "current.txt").read_text(encoding="utf-8"),
+                    "current",
+                )
+
     def test_rejects_symlinked_destination_parent_without_external_writes(self):
         installer = load_installer()
         with tempfile.TemporaryDirectory() as tmp:

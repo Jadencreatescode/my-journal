@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0 alpha 3
+
+Corrected public alpha candidate after transactional upgrade acceptance testing.
+
+### Fixed
+
+1. Upgrade rollback backups now live under installer owned metadata instead of active plugin and skill discovery roots.
+2. Existing alpha 2 sibling backups are removed only after the replacement installation state is durable and recoverable.
+3. Added regression coverage for safe backup placement, legacy state migration, rollback restoration, and discovery root cleanliness.
+
 ## 0.1.0 alpha 2
 
 Corrected public alpha candidate after owner first use acceptance testing.
