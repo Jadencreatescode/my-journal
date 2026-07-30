@@ -866,7 +866,12 @@ def write_run(
         "packet_plan_path": str(packet_plan_path),
         "status": "pending_note_validation",
     }
-    atomic_write_text(pending_path, json.dumps(pending, indent=2) + "\n", trusted_root=output_dir)
+    atomic_write_text(
+        pending_path,
+        json.dumps(pending, indent=2) + "\n",
+        trusted_root=output_dir,
+        temporary_parent=output_dir,
+    )
     return {**pending, "pending_path": str(pending_path), "coverage": manifest["coverage"]}
 
 

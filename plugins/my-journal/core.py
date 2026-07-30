@@ -147,7 +147,10 @@ def read_pending_receipts(root: Path) -> list[tuple[Path, dict[str, Any]]]:
     root_descriptor: int | None = None
     pending_descriptor: int | None = None
     try:
-        root_descriptor = _safe_files.open_directory_fd(root)
+        try:
+            root_descriptor = _safe_files.open_directory_fd(root)
+        except FileNotFoundError:
+            return []
         try:
             pending_descriptor = os.open(
                 "pending",

@@ -33,7 +33,9 @@ _GENERATION_RECEIPT = re.compile(r"generation-[0-9a-f]{16}\.json")
 _GENERATION_LOCK = re.compile(r"generation-[0-9a-f]{16}\.lock")
 _OWNED_ATOMIC_TEMP = re.compile(
     r"\.(?:cron-job|cron-job-intent)\.json\.[0-9a-f]{48}\.tmp"
-    r"|\.generation-[0-9a-f]{16}\.json\.[0-9a-f]{48}\.tmp"
+    r"|\.generation-[0-9a-f]{16}\.json\.(?:[0-9a-f]{24}|[0-9a-f]{48})\.tmp"
+    r"|\.[0-9a-f]{16}\.json\.[0-9a-f]{24}\.tmp"
+    r"|\.(?:database-size-approvals|daily-workload-approval)\.json\.[0-9a-f]{24}\.tmp"
 )
 _CRON_RECEIPT = "cron-job.json"
 _CRON_INTENT = "cron-job-intent.json"

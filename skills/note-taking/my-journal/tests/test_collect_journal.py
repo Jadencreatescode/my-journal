@@ -1030,13 +1030,21 @@ class CollectionTests(unittest.TestCase):
                 add_session(con, "s2", "discord", 100.0, "Second session")
                 add_message(con, 2, "s2", "user", "Second request", 120.0)
 
-            result = module.write_run(
-                home=home,
-                output_dir=output,
-                journal_date="1970-01-01",
-                start_ts=0.0,
-                end_ts=86400.0,
-            )
+            atomic_calls = []
+            real_atomic_write = module.atomic_write_text
+
+            def recording_atomic_write(path, text, **kwargs):
+                atomic_calls.append((Path(path), dict(kwargs)))
+                return real_atomic_write(path, text, **kwargs)
+
+            with mock.patch.object(module, "atomic_write_text", side_effect=recording_atomic_write):
+                result = module.write_run(
+                    home=home,
+                    output_dir=output,
+                    journal_date="1970-01-01",
+                    start_ts=0.0,
+                    end_ts=86400.0,
+                )
 
             manifest_path = Path(result["manifest_path"])
             packet_path = Path(result["packet_path"])
@@ -1046,6 +1054,15 @@ class CollectionTests(unittest.TestCase):
             load_plugin_core().validate_pending_receipt(
                 pending,
                 expected_run_id=result["run_id"],
+            )
+            pending_calls = [
+                kwargs
+                for path, kwargs in atomic_calls
+                if path == Path(result["pending_path"])
+            ]
+            self.assertEqual(
+                pending_calls,
+                [{"trusted_root": output, "temporary_parent": output}],
             )
             packet = packet_path.read_text(encoding="utf-8")
             self.assertIn("First session", packet)

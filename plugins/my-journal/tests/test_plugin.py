@@ -77,10 +77,21 @@ class PluginRegistrationTests(unittest.TestCase):
     def test_cron_reconciliation_matches_native_normalized_schedule_shape(self):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
+        created_job = {}
+
+        def create_job(**kwargs):
+            created_job["value"] = {"id": "native-job", **kwargs}
+            return {"id": "native-job"}
+
+        def list_jobs(*, include_disabled):
+            return [created_job["value"]] if "value" in created_job else []
+
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
             operations, "journal_root", return_value=Path(tmp)
         ), mock.patch.object(
-            operations, "_create_cron_job", return_value={"id": "native-job"}
+            operations, "_create_cron_job", side_effect=create_job
+        ), mock.patch.object(
+            operations, "_list_cron_jobs", side_effect=list_jobs
         ):
             first = operations.schedule_create("0 11 * * *", "local")
             intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
@@ -405,11 +416,21 @@ class PluginRegistrationTests(unittest.TestCase):
     def test_cron_job_pins_generation_skill_and_toolset_without_mcp(self):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
+        created_job = {}
+
+        def create_job(**kwargs):
+            created_job["value"] = {"id": "job-safe", **kwargs}
+            return {"id": "job-safe"}
+
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
         ), mock.patch.object(
-            operations, "_create_cron_job", return_value={"id": "job-safe"}
-        ) as create:
+            operations, "_create_cron_job", side_effect=create_job
+        ) as create, mock.patch.object(
+            operations,
+            "_list_cron_jobs",
+            side_effect=lambda *, include_disabled: [created_job["value"]] if "value" in created_job else [],
+        ):
             result = operations.schedule_create("0 11 * * *", "local")
 
         self.assertTrue(result["ok"])
@@ -544,6 +565,17 @@ class PluginRegistrationTests(unittest.TestCase):
 
         self.assertEqual(result["pending_run_count"], 0)
 
+    def test_maintenance_reports_zero_pending_runs_when_journal_root_is_absent(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "not-created"
+            with mock.patch.object(operations, "journal_root", return_value=root):
+                result = operations.maintenance()
+
+        self.assertEqual(result["entry_count"], 0)
+        self.assertEqual(result["pending_run_count"], 0)
+
     def test_maintenance_counts_incomplete_retained_receipt_as_pending(self):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
@@ -638,6 +670,12 @@ class PluginRegistrationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "generation-0123456789abcdef.json").write_text("{}", encoding="utf-8")
+            receipt_temp = ".0123456789abcdef.json." + "4" * 24 + ".tmp"
+            (root / receipt_temp).write_text("pending", encoding="utf-8")
+            generation_temp = ".generation-0123456789abcdef.json." + "5" * 24 + ".tmp"
+            (root / generation_temp).write_text("generation", encoding="utf-8")
+            approval_temp = ".daily-workload-approval.json." + "6" * 24 + ".tmp"
+            (root / approval_temp).write_text("approval", encoding="utf-8")
             for name in operations.PURGE_DIRECTORIES:
                 directory = root / name
                 directory.mkdir()
@@ -650,7 +688,13 @@ class PluginRegistrationTests(unittest.TestCase):
                 self.assertEqual(
                     set(preview_result["candidates"]),
                     set(operations.PURGE_DIRECTORIES)
-                    | {"cron-job.json", "generation-0123456789abcdef.json"},
+                    | {
+                        "cron-job.json",
+                        "generation-0123456789abcdef.json",
+                        receipt_temp,
+                        generation_temp,
+                        approval_temp,
+                    },
                 )
                 self.assertTrue(all((root / name).exists() for name in operations.PURGE_DIRECTORIES))
                 with self.assertRaisesRegex(ValueError, "exact confirmation"):
@@ -673,6 +717,9 @@ class PluginRegistrationTests(unittest.TestCase):
                 self.assertFalse((root / name).exists())
             self.assertFalse((root / "cron-job.json").exists())
             self.assertFalse((root / "generation-0123456789abcdef.json").exists())
+            self.assertFalse((root / receipt_temp).exists())
+            self.assertFalse((root / generation_temp).exists())
+            self.assertFalse((root / approval_temp).exists())
 
     def test_purge_preserves_all_data_if_cron_removal_fails(self):
         plugin = load_plugin()
@@ -738,15 +785,19 @@ class PluginRegistrationTests(unittest.TestCase):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
         token = "a" * 48
+        created_job = {}
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
         ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
-            operations, "_list_cron_jobs", return_value=[]
+            operations,
+            "_list_cron_jobs",
+            side_effect=lambda *, include_disabled: [created_job["value"]] if "value" in created_job else [],
         ), mock.patch.object(operations, "_create_cron_job") as create:
             def assert_intent_precedes_create(**kwargs):
                 intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
                 self.assertEqual(intent["ownership_token"], token)
                 self.assertEqual(intent["job_spec"], kwargs)
+                created_job["value"] = {"id": "owned-id", **kwargs}
                 return {"id": "owned-id"}
 
             create.side_effect = assert_intent_precedes_create
@@ -759,11 +810,19 @@ class PluginRegistrationTests(unittest.TestCase):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
         token = "b" * 48
+        created_job = {}
+
+        def create_job(**kwargs):
+            created_job["value"] = {"id": "job-1", **kwargs}
+            return {"id": "job-1"}
+
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
         ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
-            operations, "_list_cron_jobs", return_value=[]
-        ), mock.patch.object(operations, "_create_cron_job", return_value={"id": "job-1"}):
+            operations,
+            "_list_cron_jobs",
+            side_effect=lambda *, include_disabled: [created_job["value"]] if "value" in created_job else [],
+        ), mock.patch.object(operations, "_create_cron_job", side_effect=create_job):
             first = operations.schedule_create("0 11 * * *", "local")
             intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
             exact = {"id": "job-1", **intent["job_spec"]}
@@ -901,12 +960,21 @@ class PluginRegistrationTests(unittest.TestCase):
             "cron-job-intent.json",
             ".cron-job-intent.json." + "2" * 48 + ".tmp",
             ".generation-0123456789abcdef.json." + "3" * 48 + ".tmp",
+            ".generation-0123456789abcdef.json." + "5" * 24 + ".tmp",
+            ".0123456789abcdef.json." + "4" * 24 + ".tmp",
+            ".database-size-approvals.json." + "6" * 24 + ".tmp",
+            ".daily-workload-approval.json." + "7" * 24 + ".tmp",
         }
         lookalikes = {
             ".cron-job.json." + "1" * 47 + ".tmp",
             ".generation-0123456789abcdef.json." + "g" * 48 + ".tmp",
+            ".generation-0123456789abcdef.json." + "5" * 23 + ".tmp",
+            ".daily-workload-approval.json." + "7" * 23 + ".tmp",
+            ".config.json." + "8" * 24 + ".tmp",
             "cron-job-intent.json.backup",
             "generation-0123456789abcdef.json.tmp",
+            ".0123456789abcdef.json." + "4" * 23 + ".tmp",
+            ".0123456789abcdef.json." + "z" * 24 + ".tmp",
         }
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
