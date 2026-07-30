@@ -2,7 +2,7 @@
 
 ## Supported version
 
-Only `0.1.0-alpha.3` receives security fixes during the alpha.
+Only `0.1.0-alpha.4` receives security fixes during the alpha.
 
 ## Reporting
 

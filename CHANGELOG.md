@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0 alpha 4
+
+Reconciles the public macOS hardened release line with the owner accepted alpha 3 installer repair and tightens completed run reporting before public publication.
+
+### Fixed
+
+1. Preserve macOS system root alias normalization and descriptor anchored lifecycle operations alongside isolated installer backups.
+2. Keep upgrade backups under installer owned metadata so Hermes never discovers backup plugins or skills.
+3. Treat a retained pending receipt as logically complete only when its matching durable state and canonical evidence validate.
+4. Require generation success to leave no active pending work for any requested date.
+5. Preserve both historical alpha 2 repair records in one coherent public lineage.
+
 ## 0.1.0 alpha 3
 
 Corrected public alpha candidate after transactional upgrade acceptance testing.

@@ -242,6 +242,57 @@ class PluginRegistrationTests(unittest.TestCase):
         enabled = set(command[command.index("-t") + 1].split(","))
         self.assertTrue(enabled.isdisjoint(forbidden))
 
+    def test_generation_success_requires_no_active_pending_run_for_requested_date(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        completed = type("Completed", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        run_id = "e" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pending").mkdir()
+            (root / "pending" / f"{run_id}.json").write_text(
+                json.dumps({"run_id": run_id, "journal_date": journal_date}) + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False), mock.patch.object(
+                operations, "_hermes_executable", return_value="/hermes"
+            ), mock.patch.object(
+                operations.subprocess, "run", return_value=completed
+            ), mock.patch.object(
+                operations, "validated_entry_dates", return_value={journal_date}
+            ):
+                result = operations.run_generation(
+                    f"Generate journal date {journal_date}.", expected_dates=[journal_date]
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("active pending", result["error"])
+
+    def test_generation_success_fails_closed_on_malformed_pending_receipt(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        completed = type("Completed", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        run_id = "d" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pending").mkdir()
+            (root / "pending" / f"{run_id}.json").write_text("{\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False), mock.patch.object(
+                operations, "_hermes_executable", return_value="/hermes"
+            ), mock.patch.object(
+                operations.subprocess, "run", return_value=completed
+            ), mock.patch.object(
+                operations, "validated_entry_dates", return_value={journal_date}
+            ):
+                result = operations.run_generation(
+                    f"Generate journal date {journal_date}.", expected_dates=[journal_date]
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["active_pending_dates"], [journal_date])
+
     def test_malicious_packet_is_structured_untrusted_data_and_cannot_add_tools(self):
         plugin = load_plugin()
         tools = sys.modules[f"{plugin.__name__}.tools"]
@@ -366,6 +417,34 @@ class PluginRegistrationTests(unittest.TestCase):
 
             self.assertEqual(result["existing_entry_count"], 0)
             self.assertEqual(result["missing_dates"], ["2026-07-27"])
+
+    def test_maintenance_excludes_retained_receipt_for_validated_completed_run(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        run_id = "f" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pending").mkdir()
+            (root / "state").mkdir()
+            pending_path = root / "pending" / f"{run_id}.json"
+            pending_path.write_text(
+                json.dumps({"run_id": run_id, "journal_date": journal_date}) + "\n",
+                encoding="utf-8",
+            )
+            (root / "state" / f"{journal_date}-{run_id}.json").write_text(
+                json.dumps({"status": "completed", "journal_date": journal_date, "run_id": run_id}) + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(operations, "journal_root", return_value=root), mock.patch.object(
+                operations, "journal_status", return_value={"entry_count": 1}
+            ), mock.patch.object(
+                operations, "validated_entry_dates", return_value={journal_date}
+            ):
+                result = operations.maintenance()
+                self.assertTrue(pending_path.exists())
+
+        self.assertEqual(result["pending_run_count"], 0)
 
     def test_cli_registers_generation_backfill_cron_and_maintenance_commands(self):
         plugin = load_plugin()

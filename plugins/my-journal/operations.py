@@ -326,17 +326,27 @@ def run_generation(request: str, *, expected_dates: list[str]) -> dict:
             else set()
         )
         missing = [value for value in expected_dates if value not in available]
-        ok = completed.returncode == 0 and not missing
+        active_pending = _active_pending_dates(root, expected_dates)
+        ok = completed.returncode == 0 and not missing and not active_pending
         error = completed.stderr.strip() or None
         if completed.returncode == 0 and missing:
             error = "generation finished without validated canonical entries for: " + ", ".join(missing)
-        ledger.update({"status": "completed" if ok else "failed", "missing_dates": missing})
+        elif completed.returncode == 0 and active_pending:
+            error = "generation finished with active pending runs for: " + ", ".join(active_pending)
+        ledger.update(
+            {
+                "status": "completed" if ok else "failed",
+                "missing_dates": missing,
+                "active_pending_dates": active_pending,
+            }
+        )
         _safe_files.safe_atomic_write_text(root, ledger_path, json.dumps(ledger, indent=2) + "\n")
         return {
             "ok": ok,
             "request_id": request_id,
             "exit_code": completed.returncode,
             "missing_dates": missing,
+            "active_pending_dates": active_pending,
             "output": completed.stdout.strip(),
             "error": error,
         }
@@ -549,13 +559,76 @@ def preview(range_text: str) -> dict:
     return _missing_days(range_text)
 
 
+def _pending_receipt_is_completed(root: Path, path: Path) -> bool:
+    try:
+        receipt = json.loads(_safe_files.safe_read_text(root, path, max_bytes=100_000))
+        if not isinstance(receipt, dict) or receipt.get("run_id") != path.stem:
+            return False
+        run_id = receipt.get("run_id")
+        journal_date = receipt.get("journal_date")
+        if not isinstance(run_id, str) or re.fullmatch(r"[0-9a-f]{16}", run_id) is None:
+            return False
+        if not isinstance(journal_date, str):
+            return False
+        day = date.fromisoformat(journal_date)
+        if day.isoformat() != journal_date:
+            return False
+        state_path = root / "state" / f"{journal_date}-{run_id}.json"
+        state = json.loads(_safe_files.safe_read_text(root, state_path, max_bytes=1_000_000))
+        if not isinstance(state, dict) or any(
+            (
+                state.get("status") != "completed",
+                state.get("run_id") != run_id,
+                state.get("journal_date") != journal_date,
+            )
+        ):
+            return False
+        return journal_date in validated_entry_dates(root, day, day)
+    except (FileNotFoundError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _active_pending_dates(root: Path, expected_dates: list[str]) -> list[str]:
+    expected = set(expected_dates)
+    pending = root / "pending"
+    if pending.is_symlink():
+        return sorted(expected)
+    if not pending.is_dir():
+        return []
+    active: set[str] = set()
+    for item in pending.iterdir():
+        if item.is_symlink() or not item.is_file():
+            active.update(expected)
+            continue
+        try:
+            receipt = json.loads(_safe_files.safe_read_text(root, item, max_bytes=100_000))
+        except (FileNotFoundError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            active.update(expected)
+            continue
+        if not isinstance(receipt, dict):
+            active.update(expected)
+            continue
+        journal_date = receipt.get("journal_date")
+        if not isinstance(journal_date, str):
+            active.update(expected)
+        elif journal_date in expected and not _pending_receipt_is_completed(root, item):
+            active.add(journal_date)
+    return sorted(active)
+
+
 def maintenance() -> dict:
-    root = journal_root()
+    root = journal_root().expanduser().absolute()
     status = journal_status(root)
     pending = root / "pending"
     pending_count = 0
     if pending.is_dir() and not pending.is_symlink():
-        pending_count = sum(1 for item in pending.iterdir() if item.is_file() and not item.is_symlink())
+        pending_count = sum(
+            1
+            for item in pending.iterdir()
+            if item.is_file()
+            and not item.is_symlink()
+            and not _pending_receipt_is_completed(root, item)
+        )
     return {**status, "pending_run_count": pending_count}
 
 
