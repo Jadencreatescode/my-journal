@@ -943,6 +943,8 @@ class PluginRegistrationTests(unittest.TestCase):
             os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
         ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
             operations, "_list_cron_jobs", return_value=[]
+        ), mock.patch.object(
+            operations.importlib.util, "find_spec", return_value=None
         ), mock.patch.object(operations, "_create_cron_job", return_value={"id": "orphan"}), mock.patch.object(
             operations, "_write_descriptor_json", side_effect=fail_receipt
         ), mock.patch.object(operations, "_remove_cron_job", side_effect=OSError("crash during rollback")):
