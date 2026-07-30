@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0 alpha 3
+
+Corrected public alpha candidate after transactional upgrade acceptance testing.
+
+### Fixed
+
+1. Upgrade rollback backups now live under installer owned metadata instead of active plugin and skill discovery roots.
+2. Existing alpha 2 sibling backups are removed only after the replacement installation state is durable and recoverable.
+3. Added regression coverage for safe backup placement, legacy state migration, rollback restoration, and discovery root cleanliness.
+
 ## 0.1.0 alpha 2
 
 Corrects macOS installation through system root aliases and the absence of Linux `/proc` descriptor paths while preserving descriptor anchored rejection of deeper symlinks. It also corrects first canonical publication after owner acceptance testing. CI checks the clean release tree before test caches are created.

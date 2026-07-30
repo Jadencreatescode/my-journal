@@ -2,7 +2,7 @@
 
 **The evidence backed activity journal for Hermes.**
 
-My Journal `0.1.0-alpha.2` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines guided first use, bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, 11 deterministic journal tools, four restricted generation tools, and the scriptable `hermes journal` command family.
+My Journal `0.1.0-alpha.3` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines guided first use, bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, 11 deterministic journal tools, four restricted generation tools, and the scriptable `hermes journal` command family.
 
 This is an alpha. Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` before enabling collection.
 
@@ -231,8 +231,8 @@ python3 -m unittest discover -s skills/note-taking/my-journal/tests -v
 The deterministic release archive is built only from a Git reference:
 
 ```text
-python3 scripts/build_release.py --ref v0.1.0-alpha.2 --output dist
-python3 scripts/verify_release.py --ref v0.1.0-alpha.2 --archive dist/my-journal-v0.1.0-alpha.2.tar.gz
+python3 scripts/build_release.py --ref v0.1.0-alpha.3 --output dist
+python3 scripts/verify_release.py --ref v0.1.0-alpha.3 --archive dist/my-journal-v0.1.0-alpha.3.tar.gz
 ```
 
 See `CONTRIBUTING.md`, `COMPATIBILITY.md`, and `CHANGELOG.md` for the complete alpha boundary.
