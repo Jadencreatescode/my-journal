@@ -853,6 +853,10 @@ class PluginRegistrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
         ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
+            operations, "_list_cron_jobs", return_value=[]
+        ), mock.patch.object(
+            operations.importlib.util, "find_spec", return_value=None
+        ), mock.patch.object(
             operations, "_create_cron_job", return_value={"id": "job_abc123"}
         ):
             result = operations.schedule_create("0 11 * * *", "local")
