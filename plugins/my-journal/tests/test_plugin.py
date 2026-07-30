@@ -104,7 +104,11 @@ class PluginRegistrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
             operations, "journal_root", return_value=Path(tmp)
         ), mock.patch.object(
+            operations, "_list_cron_jobs", return_value=[]
+        ), mock.patch.object(
             operations, "_create_cron_job", return_value={"id": "native-job"}
+        ), mock.patch.object(
+            operations.importlib.util, "find_spec", return_value=None
         ):
             first = operations.schedule_create("0 11 * * *", "local")
             intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
@@ -655,6 +659,10 @@ class PluginRegistrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
         ), mock.patch.object(
+            operations, "_list_cron_jobs", return_value=[]
+        ), mock.patch.object(
+            operations.importlib.util, "find_spec", return_value=None
+        ), mock.patch.object(
             operations, "_create_cron_job", return_value={"id": "job-safe"}
         ) as create:
             result = operations.schedule_create("0 11 * * *", "local")
@@ -874,7 +882,11 @@ class PluginRegistrationTests(unittest.TestCase):
             os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
         ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
             operations, "_list_cron_jobs", return_value=[]
-        ), mock.patch.object(operations, "_create_cron_job") as create:
+        ), mock.patch.object(
+            operations.importlib.util, "find_spec", return_value=None
+        ), mock.patch.object(
+            operations, "_create_cron_job"
+        ) as create:
             def assert_intent_precedes_create(**kwargs):
                 intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
                 self.assertEqual(intent["ownership_token"], token)
@@ -895,6 +907,8 @@ class PluginRegistrationTests(unittest.TestCase):
             os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
         ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
             operations, "_list_cron_jobs", return_value=[]
+        ), mock.patch.object(
+            operations.importlib.util, "find_spec", return_value=None
         ), mock.patch.object(operations, "_create_cron_job", return_value={"id": "job-1"}):
             first = operations.schedule_create("0 11 * * *", "local")
             intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
