@@ -13,4 +13,4 @@
 1. Native Windows support.
 2. Complete recovery of deleted sessions.
 3. Compatibility with arbitrary third party journal schemas.
-4. A stable API before the alpha series is complete.
+4. Compatibility beyond the documented `0.1.0` interfaces and file formats.

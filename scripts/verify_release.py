@@ -8,6 +8,7 @@ from pathlib import Path
 
 FORBIDDEN_NAMES = {".env", "credentials.json", "config.local.json"}
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".pyc", ".zip"}
+RUNTIME_ROOTS = {"journal", "evidence", "runs", "pending", "backups"}
 MAX_MEMBERS = 5000
 MAX_MEMBER_BYTES = 20_000_000
 MAX_TOTAL_BYTES = 100_000_000
@@ -40,6 +41,7 @@ def verify(ref: str, archive: Path, *, repo: Path | None = None) -> dict:
     archive = archive.expanduser().absolute()
     builder = _builder_module()
     commit = builder.resolve_commit(ref, repository)
+    builder.validate_stable_metadata(commit, repository)
     expected = builder.archive_bytes(commit, repository)
     actual = archive.read_bytes()
     if actual != expected:
@@ -67,6 +69,10 @@ def verify(ref: str, archive: Path, *, repo: Path | None = None) -> dict:
             archive_root = builder.PREFIX.rstrip("/")
             if member.name != archive_root and not member.name.startswith(builder.PREFIX):
                 raise ValueError(f"archive member has the wrong prefix: {member.name}")
+            relative_name = member.name.removeprefix(builder.PREFIX)
+            relative = Path(relative_name)
+            if relative.parts and relative.parts[0] in RUNTIME_ROOTS:
+                raise ValueError(f"archive contains runtime data: {member.name}")
             if member.issym() or member.islnk():
                 raise ValueError(f"archive contains a link: {member.name}")
             if member.isdev() or member.isfifo():
@@ -81,11 +87,25 @@ def verify(ref: str, archive: Path, *, repo: Path | None = None) -> dict:
             if total_bytes > MAX_TOTAL_BYTES:
                 raise ValueError("archive expanded size is oversized")
 
+    sidecars = {
+        "SHA256SUMS": f"{hashlib.sha256(actual).hexdigest()}  {archive.name}\n",
+        f"{archive.name}.inventory.txt": "\n".join(names) + "\n",
+        f"{archive.name}.commit.txt": commit + "\n",
+    }
+    for name, expected_text in sidecars.items():
+        path = archive.parent / name
+        label = "commit sidecar" if name.endswith(".commit.txt") else "release sidecar"
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"{label} is missing or unsafe: {name}")
+        if path.read_text(encoding="utf-8") != expected_text:
+            raise ValueError(f"{label} does not match the exact archive: {name}")
+
     return {
         "commit": commit,
         "sha256": hashlib.sha256(actual).hexdigest(),
         "members": len(members),
         "expanded_bytes": total_bytes,
+        "sidecars_verified": True,
     }
 
 
@@ -96,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
     result = verify(args.ref, args.archive, repo=args.repo)
-    for key in ("commit", "sha256", "members", "expanded_bytes"):
+    for key in ("commit", "sha256", "members", "expanded_bytes", "sidecars_verified"):
         print(f"{key}={result[key]}")
     return 0
 

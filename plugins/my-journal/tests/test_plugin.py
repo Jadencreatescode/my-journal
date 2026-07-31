@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -8,6 +9,7 @@ import fcntl
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from unittest import mock
 from pathlib import Path
 
@@ -28,6 +30,45 @@ def load_plugin():
     return module
 
 
+def strict_pending(root: Path, run_id: str, journal_date: str) -> dict:
+    packet_dir = root / "packets" / journal_date / run_id
+    packet_path = packet_dir / "chunk-000001.md"
+    return {
+        "run_id": run_id,
+        "journal_date": journal_date,
+        "manifest_path": str(root / "evidence" / f"{journal_date}-{run_id}.json"),
+        "packet_path": str(packet_path),
+        "packet_paths": [str(packet_path)],
+        "packet_plan_path": str(packet_dir / "plan.json"),
+        "status": "pending_note_validation",
+    }
+
+
+def write_completed_state(
+    state_path: Path,
+    *,
+    manifest_path: Path,
+    note_path: Path,
+    digest_dir: Path,
+    run_id: str,
+    journal_date: str,
+    coverage: dict | None = None,
+) -> None:
+    state_path.write_text(
+        json.dumps({
+            "status": "completed",
+            "run_id": run_id,
+            "journal_date": journal_date,
+            "manifest_path": str(manifest_path),
+            "note_path": str(note_path),
+            "digest_dir": str(digest_dir),
+            "coverage": coverage or {},
+            "validated_at": "2026-07-30T00:00:00+00:00",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+
 class FakeContext:
     def __init__(self):
         self.tools = {}
@@ -45,6 +86,73 @@ class FakeContext:
 
 
 class PluginRegistrationTests(unittest.TestCase):
+    def _complete_stable_fixture(
+        self,
+        tools,
+        root: Path,
+        run_id: str,
+        journal_date: str,
+        *,
+        after_completion_write=None,
+    ):
+        pending = strict_pending(root, run_id, journal_date)
+        pending_path = root / "pending" / f"{run_id}.json"
+        pending_path.parent.mkdir(parents=True)
+        pending_path.write_text(json.dumps(pending) + "\n", encoding="utf-8")
+        manifest = {"run_id": run_id, "journal_date": journal_date, "coverage": {}}
+        manifest_path = Path(pending["manifest_path"])
+        manifest_path.parent.mkdir(parents=True)
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+        class Validator:
+            validate_manifest = staticmethod(lambda value: [])
+            validate_digest_bindings = staticmethod(lambda value, digests: [])
+            validate_note = staticmethod(lambda *args, **kwargs: [])
+
+            @staticmethod
+            def validate_and_commit(manifest_path, note_path, state_path, digest_dir):
+                write_completed_state(
+                    state_path,
+                    manifest_path=manifest_path,
+                    note_path=note_path,
+                    digest_dir=digest_dir,
+                    run_id=run_id,
+                    journal_date=journal_date,
+                )
+                return {"valid": True}
+
+        write_context = nullcontext()
+        if after_completion_write is not None:
+            real_write = tools._safe_files.safe_atomic_write_text
+
+            def write_then_hook(owned_root, target, text, **kwargs):
+                result = real_write(owned_root, target, text, **kwargs)
+                if target.name == "completion.json":
+                    after_completion_write()
+                return result
+
+            write_context = mock.patch.object(
+                tools._safe_files,
+                "safe_atomic_write_text",
+                side_effect=write_then_hook,
+            )
+
+        with mock.patch.dict(
+            os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False
+        ), mock.patch.object(
+            tools, "_next_pending_chunk", return_value=None
+        ), mock.patch.object(
+            tools, "_manifest_for_pending", return_value=manifest
+        ), mock.patch.object(
+            tools, "_render_note", return_value="stable note\n"
+        ), mock.patch.object(
+            tools, "_script_module", return_value=Validator
+        ), mock.patch.object(
+            tools, "validated_entry_dates", return_value={journal_date}
+        ), write_context:
+            result = tools._generation_complete(run_id, journal_date, {})
+        return result, pending_path, manifest_path
+
     def test_plugin_manifest_lists_exactly_every_registered_tool(self):
         plugin = load_plugin()
         ctx = FakeContext()
@@ -148,16 +256,12 @@ class PluginRegistrationTests(unittest.TestCase):
                     state_path.write_text("replacement state\n", encoding="utf-8")
                     return {"valid": False}
 
-            pending = {
-                "run_id": run_id,
-                "journal_date": journal_date,
-                "packet_plan_path": str(root / "packets" / "plan.json"),
-                "manifest_path": str(root / "evidence" / "manifest.json"),
-            }
+            pending = strict_pending(root, run_id, journal_date)
+            pending_path = root / "pending" / f"{run_id}.json"
+            pending_path.parent.mkdir(parents=True)
+            pending_path.write_text(json.dumps(pending) + "\n", encoding="utf-8")
             manifest = {"run_id": run_id, "journal_date": journal_date}
             with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False), mock.patch.object(
-                tools, "_pending_run", return_value=pending
-            ), mock.patch.object(
                 tools, "_next_pending_chunk", return_value=None
             ), mock.patch.object(
                 tools, "_manifest_for_pending", return_value=manifest
@@ -199,19 +303,25 @@ class PluginRegistrationTests(unittest.TestCase):
 
                 @staticmethod
                 def validate_and_commit(manifest_path, note_path, state_path, digest_dir):
-                    state_path.write_text("completed state\n", encoding="utf-8")
+                    write_completed_state(
+                        state_path,
+                        manifest_path=manifest_path,
+                        note_path=note_path,
+                        digest_dir=digest_dir,
+                        run_id=run_id,
+                        journal_date=journal_date,
+                    )
                     return {"valid": True}
 
-            pending = {
-                "run_id": run_id,
-                "journal_date": journal_date,
-                "packet_plan_path": str(root / "packets" / "plan.json"),
-                "manifest_path": str(root / "evidence" / "manifest.json"),
-            }
-            manifest = {"run_id": run_id, "journal_date": journal_date}
+            pending = strict_pending(root, run_id, journal_date)
+            pending_path = root / "pending" / f"{run_id}.json"
+            pending_path.parent.mkdir(parents=True)
+            pending_path.write_text(json.dumps(pending) + "\n", encoding="utf-8")
+            manifest = {"run_id": run_id, "journal_date": journal_date, "coverage": {}}
+            manifest_path = Path(pending["manifest_path"])
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
             with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False), mock.patch.object(
-                tools, "_pending_run", return_value=pending
-            ), mock.patch.object(
                 tools, "_next_pending_chunk", return_value=None
             ), mock.patch.object(
                 tools, "_manifest_for_pending", return_value=manifest
@@ -226,7 +336,396 @@ class PluginRegistrationTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(canonical.read_text(encoding="utf-8"), "first note\n")
-            self.assertEqual(state.read_text(encoding="utf-8"), "completed state\n")
+            self.assertEqual(json.loads(state.read_text(encoding="utf-8"))["status"], "completed")
+
+    def test_stable_completion_archives_exact_receipt_and_binds_every_artifact(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        run_id = "c" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pending = strict_pending(root, run_id, journal_date)
+            pending_path = root / "pending" / f"{run_id}.json"
+            pending_path.parent.mkdir(parents=True)
+            pending_bytes = (
+                " {\n  " + json.dumps("run_id") + ": " + json.dumps(run_id) + ",\n"
+                + "  " + json.dumps("journal_date") + ": " + json.dumps(journal_date) + ",\n"
+                + "  " + json.dumps("manifest_path") + ": " + json.dumps(pending["manifest_path"]) + ",\n"
+                + "  " + json.dumps("packet_path") + ": " + json.dumps(pending["packet_path"]) + ",\n"
+                + "  " + json.dumps("packet_paths") + ": " + json.dumps(pending["packet_paths"]) + ",\n"
+                + "  " + json.dumps("packet_plan_path") + ": " + json.dumps(pending["packet_plan_path"]) + ",\n"
+                + "  " + json.dumps("status") + ": " + json.dumps(pending["status"]) + "\n}\n\n"
+            ).encode("utf-8")
+            pending_path.write_bytes(pending_bytes)
+            manifest = {"run_id": run_id, "journal_date": journal_date, "coverage": {}}
+            manifest_path = Path(pending["manifest_path"])
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+            class Validator:
+                validate_manifest = staticmethod(lambda value: [])
+                validate_digest_bindings = staticmethod(lambda value, digests: [])
+                validate_note = staticmethod(lambda *args, **kwargs: [])
+
+                @staticmethod
+                def validate_and_commit(manifest_path, note_path, state_path, digest_dir):
+                    write_completed_state(
+                        state_path,
+                        manifest_path=manifest_path,
+                        note_path=note_path,
+                        digest_dir=digest_dir,
+                        run_id=run_id,
+                        journal_date=journal_date,
+                    )
+                    return {"valid": True}
+
+            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False), mock.patch.object(
+                tools, "_next_pending_chunk", return_value=None
+            ), mock.patch.object(
+                tools, "_manifest_for_pending", return_value=manifest
+            ), mock.patch.object(
+                tools, "_render_note", return_value="stable note\n"
+            ), mock.patch.object(
+                tools, "_script_module", return_value=Validator
+            ), mock.patch.object(
+                tools, "validated_entry_dates", return_value={journal_date}
+            ):
+                result = tools._generation_complete(run_id, journal_date, {})
+
+            archive = Path(result["completed_receipt_path"])
+            completion = json.loads(Path(result["completion_path"]).read_text(encoding="utf-8"))
+            state = Path(result["state_path"])
+            canonical = Path(result["canonical_note_path"])
+            self.assertEqual(archive.read_bytes(), pending_bytes)
+            artifacts = {
+                "receipt": pending_path,
+                "archive": archive,
+                "state": state,
+                "canonical": canonical,
+                "manifest": manifest_path,
+            }
+            for name, path in artifacts.items():
+                metadata = path.stat()
+                self.assertEqual(completion[f"{name}_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+                self.assertEqual(
+                    completion[f"{name}_identity"],
+                    {"device": metadata.st_dev, "inode": metadata.st_ino},
+                )
+
+    def test_stable_completion_detects_pending_receipt_replacement(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        run_id = "d" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pending = strict_pending(root, run_id, journal_date)
+            pending_path = root / "pending" / f"{run_id}.json"
+            pending_path.parent.mkdir(parents=True)
+            pending_bytes = (json.dumps(pending) + "\n").encode("utf-8")
+            pending_path.write_bytes(pending_bytes)
+            old_identity = pending_path.stat()
+            replacement = root / "replacement.json"
+            replacement.write_bytes(pending_bytes)
+            os.replace(replacement, pending_path)
+            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False), mock.patch.object(
+                tools, "_next_pending_chunk", return_value={"index": 1}
+            ):
+                with self.assertRaisesRegex(ValueError, "identity changed"):
+                    tools._generation_complete_with_pending(
+                        run_id,
+                        journal_date,
+                        {},
+                        pending,
+                        pending_bytes,
+                        (old_identity.st_dev, old_identity.st_ino),
+                    )
+            self.assertEqual(pending_path.read_bytes(), pending_bytes)
+
+    def test_stable_completion_final_write_failure_is_retry_recoverable(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        run_id = "e" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pending = strict_pending(root, run_id, journal_date)
+            pending_path = root / "pending" / f"{run_id}.json"
+            pending_path.parent.mkdir(parents=True)
+            pending_bytes = (json.dumps(pending, indent=1) + "\n").encode("utf-8")
+            pending_path.write_bytes(pending_bytes)
+            manifest = {"run_id": run_id, "journal_date": journal_date, "coverage": {}}
+            manifest_path = Path(pending["manifest_path"])
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+            class Validator:
+                validate_manifest = staticmethod(lambda value: [])
+                validate_digest_bindings = staticmethod(lambda value, digests: [])
+                validate_note = staticmethod(lambda *args, **kwargs: [])
+
+                @staticmethod
+                def validate_and_commit(manifest_path, note_path, state_path, digest_dir):
+                    write_completed_state(
+                        state_path,
+                        manifest_path=manifest_path,
+                        note_path=note_path,
+                        digest_dir=digest_dir,
+                        run_id=run_id,
+                        journal_date=journal_date,
+                    )
+                    return {"valid": True}
+
+            real_write = tools._safe_files.safe_atomic_write_text
+            failed_once = False
+
+            def fail_final_once(owned_root, target, text, **kwargs):
+                nonlocal failed_once
+                if target.name == "completion.json" and not failed_once:
+                    failed_once = True
+                    raise OSError("completion fsync failed")
+                return real_write(owned_root, target, text, **kwargs)
+
+            patches = (
+                mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False),
+                mock.patch.object(tools, "_next_pending_chunk", return_value=None),
+                mock.patch.object(tools, "_manifest_for_pending", return_value=manifest),
+                mock.patch.object(tools, "_render_note", return_value="stable note\n"),
+                mock.patch.object(tools, "_script_module", return_value=Validator),
+                mock.patch.object(tools, "validated_entry_dates", return_value={journal_date}),
+                mock.patch.object(operations, "validated_entry_dates", return_value={journal_date}),
+                mock.patch.object(tools._safe_files, "safe_atomic_write_text", side_effect=fail_final_once),
+            )
+            with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+                with self.assertRaisesRegex(OSError, "completion fsync failed"):
+                    tools._generation_complete(run_id, journal_date, {})
+                self.assertTrue(pending_path.exists())
+                self.assertEqual(
+                    (root / "runs" / run_id / "completed-pending-receipt.json").read_bytes(),
+                    pending_bytes,
+                )
+                self.assertEqual(operations.maintenance()["pending_run_count"], 1)
+                result = tools._generation_complete(run_id, journal_date, {})
+                self.assertIsNone(tools._pending_for_date(journal_date))
+                self.assertEqual(operations.maintenance()["pending_run_count"], 0)
+            self.assertTrue(result["ok"])
+
+    def test_stable_completion_is_logically_consumed_only_while_full_chain_matches(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        run_id = "f" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pending = strict_pending(root, run_id, journal_date)
+            pending_path = root / "pending" / f"{run_id}.json"
+            pending_path.parent.mkdir(parents=True)
+            pending_path.write_text(json.dumps(pending) + "\n", encoding="utf-8")
+            manifest = {"run_id": run_id, "journal_date": journal_date, "coverage": {}}
+            manifest_path = Path(pending["manifest_path"])
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+            class Validator:
+                validate_manifest = staticmethod(lambda value: [])
+                validate_digest_bindings = staticmethod(lambda value, digests: [])
+                validate_note = staticmethod(lambda *args, **kwargs: [])
+
+                @staticmethod
+                def validate_and_commit(manifest_path, note_path, state_path, digest_dir):
+                    write_completed_state(
+                        state_path,
+                        manifest_path=manifest_path,
+                        note_path=note_path,
+                        digest_dir=digest_dir,
+                        run_id=run_id,
+                        journal_date=journal_date,
+                    )
+                    return {"valid": True}
+
+            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False), mock.patch.object(
+                tools, "_next_pending_chunk", return_value=None
+            ), mock.patch.object(tools, "_manifest_for_pending", return_value=manifest), mock.patch.object(
+                tools, "_render_note", return_value="stable note\n"
+            ), mock.patch.object(tools, "_script_module", return_value=Validator), mock.patch.object(
+                tools, "validated_entry_dates", return_value={journal_date}
+            ):
+                result = tools._generation_complete(run_id, journal_date, {})
+                self.assertIsNone(tools._pending_for_date(journal_date))
+                Path(result["state_path"]).write_text("{}\n", encoding="utf-8")
+                resumed = tools._pending_for_date(journal_date)
+            self.assertEqual(resumed["run_id"], run_id)
+
+    def test_stable_completion_replay_returns_existing_chain_without_publication(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        run_id = "9" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first, _, _ = self._complete_stable_fixture(tools, root, run_id, journal_date)
+            canonical = Path(first["canonical_note_path"])
+            original = canonical.read_bytes()
+            with mock.patch.dict(
+                os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False
+            ), mock.patch.object(
+                tools, "validated_entry_dates", return_value={journal_date}
+            ), mock.patch.object(
+                tools, "_generation_complete_with_pending"
+            ) as publish:
+                replay = tools._generation_complete(
+                    run_id,
+                    journal_date,
+                    {"overview": "different synthesis"},
+                )
+
+            self.assertTrue(replay["ok"])
+            self.assertTrue(replay["already_completed"])
+            publish.assert_not_called()
+            self.assertEqual(canonical.read_bytes(), original)
+
+    def test_completion_validation_rechecks_live_path_identities_before_success(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        run_id = "8" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, pending_path, _ = self._complete_stable_fixture(
+                tools, root, run_id, journal_date
+            )
+            pending_bytes = pending_path.read_bytes()
+            real_read = tools._read_bytes_identity
+            replaced = False
+
+            def replace_after_canonical(owned_root, target, **kwargs):
+                nonlocal replaced
+                result = real_read(owned_root, target, **kwargs)
+                if target.suffix == ".md" and not replaced:
+                    replacement = root / "replacement.json"
+                    replacement.write_bytes(pending_bytes)
+                    os.replace(replacement, pending_path)
+                    replaced = True
+                return result
+
+            with mock.patch.object(
+                tools, "_read_bytes_identity", side_effect=replace_after_canonical
+            ), mock.patch.object(
+                tools, "validated_entry_dates", return_value={journal_date}
+            ):
+                valid = tools._completion_evidence_valid(root, pending_path)
+
+            self.assertTrue(replaced)
+            self.assertFalse(valid)
+
+    def test_completed_artifact_corruption_matrix_is_active_everywhere(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        journal_date = "2026-07-27"
+        artifact_names = ("archive", "completion", "state", "manifest", "canonical")
+        mutation_names = ("missing", "linked", "replaced")
+
+        for artifact_name in artifact_names:
+            for mutation_name in mutation_names:
+                with self.subTest(artifact=artifact_name, mutation=mutation_name):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        run_id = hashlib.sha256(
+                            f"{artifact_name}:{mutation_name}".encode("utf-8")
+                        ).hexdigest()[:16]
+                        result, pending_path, manifest_path = self._complete_stable_fixture(
+                            tools, root, run_id, journal_date
+                        )
+                        artifacts = {
+                            "archive": Path(result["completed_receipt_path"]),
+                            "completion": Path(result["completion_path"]),
+                            "state": Path(result["state_path"]),
+                            "manifest": manifest_path,
+                            "canonical": Path(result["canonical_note_path"]),
+                        }
+                        target = artifacts[artifact_name]
+                        original_bytes = target.read_bytes()
+                        if mutation_name == "missing":
+                            target.unlink()
+                        elif mutation_name == "linked":
+                            held = root / f"held-{artifact_name}"
+                            target.rename(held)
+                            target.symlink_to(held)
+                        else:
+                            replacement = root / f"replacement-{artifact_name}"
+                            replacement.write_bytes(
+                                original_bytes.replace(
+                                    b'"status": "completed"',
+                                    b'"status": "corrupt"',
+                                )
+                                if artifact_name == "completion"
+                                else original_bytes
+                            )
+                            os.replace(replacement, target)
+
+                        with mock.patch.dict(
+                            os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False
+                        ), mock.patch.object(
+                            tools, "validated_entry_dates", return_value={journal_date}
+                        ), mock.patch.object(
+                            operations, "validated_entry_dates", return_value={journal_date}
+                        ), mock.patch.object(
+                            operations, "journal_status", return_value={"entry_count": 1}
+                        ):
+                            self.assertFalse(
+                                tools._completion_evidence_valid(root, pending_path)
+                            )
+                            self.assertEqual(
+                                tools._pending_for_date(journal_date)["run_id"], run_id
+                            )
+                            self.assertEqual(
+                                operations._active_pending_dates(root, [journal_date]),
+                                [journal_date],
+                            )
+                            self.assertEqual(
+                                operations.maintenance()["pending_run_count"], 1
+                            )
+
+    def test_completion_tool_rejects_chain_replaced_after_final_write(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        run_id = "7" * 16
+        journal_date = "2026-07-27"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pending_path = root / "pending" / f"{run_id}.json"
+
+            def replace_pending():
+                replacement = root / "late-replacement.json"
+                replacement.write_bytes(pending_path.read_bytes())
+                os.replace(replacement, pending_path)
+
+            with self.assertRaisesRegex(ValueError, "changed before success"):
+                self._complete_stable_fixture(
+                    tools,
+                    root,
+                    run_id,
+                    journal_date,
+                    after_completion_write=replace_pending,
+                )
+
+    def test_stable_collect_resumes_active_work_before_already_validated(self):
+        plugin = load_plugin()
+        tools = sys.modules[f"{plugin.__name__}.tools"]
+        journal_date = "2026-07-27"
+        pending = strict_pending(Path("/journal"), "a" * 16, journal_date)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
+        ), mock.patch.object(tools, "_pending_for_date", return_value=pending), mock.patch.object(
+            tools, "validated_entry_dates", return_value={journal_date}
+        ), mock.patch.object(
+            tools, "_collection_summary", return_value={"ok": True, "resumed": True}
+        ):
+            result = tools._generation_collect(journal_date)
+        self.assertEqual(result, {"ok": True, "resumed": True})
 
     def test_generation_subprocess_has_only_dedicated_generation_toolset(self):
         plugin = load_plugin()
@@ -375,15 +874,23 @@ class PluginRegistrationTests(unittest.TestCase):
     def test_complete_synthesis_refuses_when_any_chunk_lacks_digest(self):
         plugin = load_plugin()
         tools = sys.modules[f"{plugin.__name__}.tools"]
+        run_id = "d" * 16
+        journal_date = "2026-07-27"
         pending_chunk = {"index": 2, "chunk_id": "c" * 64}
-        with mock.patch.object(tools, "_pending_run", return_value={"packet_plan_path": "/plan.json", "journal_date": "2026-07-27"}), mock.patch.object(
-            tools, "_next_pending_chunk", return_value=pending_chunk
-        ):
-            result = json.loads(
-                tools.handle_generation_complete(
-                    {"run_id": "d" * 16, "journal_date": "2026-07-27", "sections": {}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pending = strict_pending(root, run_id, journal_date)
+            pending_path = root / "pending" / f"{run_id}.json"
+            pending_path.parent.mkdir(parents=True)
+            pending_path.write_text(json.dumps(pending) + "\n", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ, {"MY_JOURNAL_ROOT": str(root)}, clear=False
+            ), mock.patch.object(tools, "_next_pending_chunk", return_value=pending_chunk):
+                result = json.loads(
+                    tools.handle_generation_complete(
+                        {"run_id": run_id, "journal_date": journal_date, "sections": {}}
+                    )
                 )
-            )
         self.assertIn("error", result)
         self.assertIn("chunk 2", result["error"])
 
@@ -516,6 +1023,7 @@ class PluginRegistrationTests(unittest.TestCase):
     def test_maintenance_excludes_retained_receipt_for_validated_completed_run(self):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
+        tools = sys.modules[f"{plugin.__name__}.tools"]
         run_id = "f" * 16
         journal_date = "2026-07-27"
         with tempfile.TemporaryDirectory() as tmp:
@@ -552,13 +1060,48 @@ class PluginRegistrationTests(unittest.TestCase):
                 "coverage": coverage,
                 "validated_at": "2026-07-28T00:00:00+00:00",
             }
-            (root / "state" / f"{journal_date}-{run_id}.json").write_text(
-                json.dumps(state) + "\n", encoding="utf-8"
+            state_path = root / "state" / f"{journal_date}-{run_id}.json"
+            state_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
+            canonical_path = Path(state["note_path"])
+            canonical_path.parent.mkdir(parents=True)
+            canonical_path.write_text("validated note\n", encoding="utf-8")
+            archive_path = root / "runs" / run_id / "completed-pending-receipt.json"
+            archive_path.parent.mkdir(parents=True)
+            archive_path.write_bytes(pending_path.read_bytes())
+            artifacts = {
+                "receipt": pending_path,
+                "archive": archive_path,
+                "state": state_path,
+                "manifest": manifest_path,
+                "canonical": canonical_path,
+            }
+            completion = {
+                "schema_version": 1,
+                "status": "completed",
+                "run_id": run_id,
+                "journal_date": journal_date,
+                "receipt_path": str(pending_path),
+                "archived_receipt_path": str(archive_path),
+                "state_path": str(state_path),
+                "manifest_path": str(manifest_path),
+                "canonical_note_path": str(canonical_path),
+            }
+            for name, artifact in artifacts.items():
+                metadata = artifact.stat()
+                completion[f"{name}_sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                completion[f"{name}_identity"] = {
+                    "device": metadata.st_dev,
+                    "inode": metadata.st_ino,
+                }
+            (archive_path.parent / "completion.json").write_text(
+                json.dumps(completion) + "\n", encoding="utf-8"
             )
             with mock.patch.object(operations, "journal_root", return_value=root), mock.patch.object(
                 operations, "journal_status", return_value={"entry_count": 1}
             ), mock.patch.object(
                 operations, "validated_entry_dates", return_value={journal_date}
+            ), mock.patch.object(
+                tools, "validated_entry_dates", return_value={journal_date}
             ):
                 result = operations.maintenance()
                 self.assertTrue(pending_path.exists())
@@ -757,27 +1300,34 @@ class PluginRegistrationTests(unittest.TestCase):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
         token = "f" * 48
+        created_job = {}
+
+        def create_job(**kwargs):
+            created_job["value"] = {"id": "job_abc123", **kwargs}
+            return {"id": "job_abc123"}
+
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
             os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
         ), mock.patch.object(operations.secrets, "token_hex", return_value=token), mock.patch.object(
-            operations, "_create_cron_job", return_value={"id": "job_abc123"}
-        ):
+            operations, "_create_cron_job", side_effect=create_job
+        ), mock.patch.object(
+            operations,
+            "_list_cron_jobs",
+            side_effect=lambda *, include_disabled: [created_job["value"]],
+        ) as list_jobs, mock.patch.object(
+            operations, "_remove_cron_job", return_value=True
+        ) as remove_job:
             result = operations.schedule_create("0 11 * * *", "local")
             intent = json.loads((Path(tmp) / "cron-job-intent.json").read_text())
-            listed = [{"id": "job_abc123", **intent["job_spec"]}]
-            with mock.patch.object(
-                operations, "_list_cron_jobs", return_value=listed
-            ) as list_jobs, mock.patch.object(
-                operations, "_remove_cron_job", return_value=True
-            ) as remove_job:
-                repeated = operations.schedule_create("0 11 * * *", "local")
-                removal = operations.schedule_remove()
+            repeated = operations.schedule_create("0 11 * * *", "local")
+            removal = operations.schedule_remove()
 
             self.assertEqual(result["job_id"], "job_abc123")
             self.assertTrue(repeated["existing"])
             self.assertEqual(removal["job_id"], "job_abc123")
-            self.assertEqual(list_jobs.call_args_list, [mock.call(include_disabled=True)] * 2)
+            self.assertEqual(list_jobs.call_args_list, [mock.call(include_disabled=True)] * 3)
             remove_job.assert_called_once_with("job_abc123")
+            self.assertEqual(created_job["value"], {"id": "job_abc123", **intent["job_spec"]})
             self.assertFalse((Path(tmp) / "cron-job.json").exists())
             self.assertFalse((Path(tmp) / "cron-job-intent.json").exists())
 

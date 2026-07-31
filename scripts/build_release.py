@@ -7,9 +7,23 @@ import subprocess
 import tarfile
 from pathlib import Path
 
-VERSION = "0.1.0-alpha.5"
+VERSION = "0.1.0"
 PREFIX = f"my-journal-v{VERSION}/"
 ARCHIVE_NAME = f"my-journal-v{VERSION}.tar.gz"
+REQUIRED_STABLE_FIELDS = {
+    "pyproject.toml": {
+        "version =": f'version = "{VERSION}"',
+        "release =": f'release = "{VERSION}"',
+    },
+    "plugins/my-journal/plugin.yaml": {"version:": f"version: {VERSION}"},
+    "skills/note-taking/journal/SKILL.md": {"version:": f"version: {VERSION}"},
+    "skills/note-taking/my-journal/SKILL.md": {"version:": f"version: {VERSION}"},
+}
+REQUIRED_STABLE_FRAGMENTS = {
+    "README.md": (f"My Journal `{VERSION}`",),
+    "SECURITY.md": (f"`{VERSION}`",),
+}
+STABLE_DOCUMENTS = ("COMPATIBILITY.md", "PRIVACY.md", "THREAT_MODEL.md")
 
 
 def _git(repo: Path, *args: str, text: bool = False):
@@ -23,6 +37,37 @@ def _git(repo: Path, *args: str, text: bool = False):
 
 def resolve_commit(ref: str, repo: Path) -> str:
     return str(_git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}", text=True)).strip()
+
+
+def _ref_text(commit: str, relative: str, repo: Path) -> str:
+    try:
+        return str(_git(repo, "show", f"{commit}:{relative}", text=True))
+    except subprocess.CalledProcessError as exc:
+        raise ValueError(f"stable release metadata file is missing: {relative}") from exc
+
+
+def validate_stable_metadata(commit: str, repo: Path) -> None:
+    errors: list[str] = []
+    for relative, fields in REQUIRED_STABLE_FIELDS.items():
+        content = _ref_text(commit, relative, repo)
+        actual_lines = [line.strip() for line in content.splitlines()]
+        for prefix, expected in fields.items():
+            matches = [line for line in actual_lines if line.startswith(prefix)]
+            if matches != [expected]:
+                errors.append(
+                    f"{relative} must contain exactly one {expected}; found {matches}"
+                )
+    for relative, fragments in REQUIRED_STABLE_FRAGMENTS.items():
+        content = _ref_text(commit, relative, repo)
+        for fragment in fragments:
+            if fragment not in content:
+                errors.append(f"{relative} is missing {fragment}")
+    for relative in STABLE_DOCUMENTS:
+        content = _ref_text(commit, relative, repo)
+        if "alpha" in content.lower():
+            errors.append(f"{relative} still describes an alpha release")
+    if errors:
+        raise ValueError("stable release metadata mismatch: " + "; ".join(errors))
 
 
 def archive_bytes(commit: str, repo: Path) -> bytes:
@@ -40,6 +85,7 @@ def archive_bytes(commit: str, repo: Path) -> bytes:
 def build(ref: str, output: Path, *, repo: Path | None = None) -> Path:
     repository = (repo or Path.cwd()).expanduser().absolute()
     commit = resolve_commit(ref, repository)
+    validate_stable_metadata(commit, repository)
     payload = archive_bytes(commit, repository)
     output = output.expanduser().absolute()
     output.mkdir(parents=True, exist_ok=True)

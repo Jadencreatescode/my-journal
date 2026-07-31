@@ -27,7 +27,7 @@
 7. Transaction records and rollback for installation lifecycle operations.
 8. Deterministic release archives built from a Git reference.
 9. Unattended generation receives only four dedicated journal generation tools. It has no terminal, web, general file, delegation, messaging, MCP, or unrelated plugin tools.
-10. Packet text is structurally labeled untrusted data. Canonical note and completion state replacement roll back together if final validation fails.
+10. Packet text is structurally labeled untrusted data. Canonical note and completion state replacement roll back together if validator publication fails. The durable completion chain then binds and rechecks the receipt, archive, state, evidence manifest, and canonical note before success.
 11. Cron ownership intent is durably written before native job creation. Exact structured reconciliation, directory descriptor locking, and descriptor anchored purge prevent orphaned or misidentified automation.
 
 ## Outside scope
@@ -36,4 +36,4 @@
 2. Compromise of the selected model provider or Hermes itself.
 3. Recovery of deleted or unavailable session history.
 4. Proof that regex and entropy redaction catches every possible secret.
-5. Native Windows support in this alpha.
+5. Native Windows support. Ubuntu under WSL is covered by the Linux support path.

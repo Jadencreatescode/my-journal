@@ -23,7 +23,7 @@ from .core import (
     validate_pending_receipt,
     validated_entry_dates,
 )
-from .tools import _missing_days, journal_root
+from .tools import _completion_evidence_valid, _missing_days, journal_root
 
 
 PURGE_DIRECTORIES = (
@@ -337,8 +337,10 @@ def run_generation(request: str, *, expected_dates: list[str]) -> dict:
         missing = [value for value in expected_dates if value not in available]
         active_pending = _active_pending_dates(root, expected_dates)
         ok = completed.returncode == 0 and not missing and not active_pending
-        error = completed.stderr.strip() or None
-        if completed.returncode == 0 and missing:
+        error = completed.stderr.strip() or None if completed.returncode != 0 else None
+        if completed.returncode != 0 and error is None:
+            error = "journal generation process failed"
+        elif completed.returncode == 0 and missing:
             error = "generation finished without validated canonical entries for: " + ", ".join(missing)
         elif completed.returncode == 0 and active_pending:
             error = "generation finished with active pending runs for: " + ", ".join(active_pending)
@@ -569,35 +571,12 @@ def preview(range_text: str) -> dict:
 
 
 def _pending_receipt_is_completed(root: Path, path: Path, receipt: dict | None = None) -> bool:
-    try:
-        if receipt is None:
-            receipt = json.loads(_safe_files.safe_read_text(root, path, max_bytes=100_000))
-        receipt = validate_pending_receipt(receipt, expected_run_id=path.stem)
-        run_id = receipt.get("run_id")
-        journal_date = receipt.get("journal_date")
-        if not isinstance(run_id, str) or re.fullmatch(r"[0-9a-f]{16}", run_id) is None:
+    if receipt is not None:
+        try:
+            validate_pending_receipt(receipt, expected_run_id=path.stem)
+        except (TypeError, ValueError):
             return False
-        if not isinstance(journal_date, str):
-            return False
-        day = date.fromisoformat(journal_date)
-        if day.isoformat() != journal_date:
-            return False
-        state_path = root / "state" / f"{journal_date}-{run_id}.json"
-        state = json.loads(_safe_files.safe_read_text(root, state_path, max_bytes=1_000_000))
-        state = validate_completed_state(state, receipt, root)
-        manifest_path = Path(receipt["manifest_path"])
-        manifest = json.loads(_safe_files.safe_read_text(root, manifest_path, max_bytes=8_000_000))
-        if not isinstance(manifest, dict) or any(
-            (
-                manifest.get("run_id") != run_id,
-                manifest.get("journal_date") != journal_date,
-                manifest.get("coverage") != state.get("coverage"),
-            )
-        ):
-            return False
-        return journal_date in validated_entry_dates(root, day, day)
-    except (FileNotFoundError, OSError, TypeError, ValueError, json.JSONDecodeError):
-        return False
+    return _completion_evidence_valid(root, path)
 
 
 def _active_pending_dates(root: Path, expected_dates: list[str]) -> list[str]:

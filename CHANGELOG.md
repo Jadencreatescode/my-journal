@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.0
+
+Promotes the reconciled alpha line to the first stable release. Stable 0.1.0 keeps the strict alpha 5 filesystem and receipt contract while restoring the alpha 3 completion, recovery, and scheduling guarantees.
+
+### Fixed
+
+1. Archive the exact validated pending receipt bytes after canonical publication.
+2. Bind the retained receipt, receipt archive, completion state, evidence manifest, and canonical note by SHA256 and filesystem identity.
+3. Treat missing, malformed, linked, replaced, or incomplete completion evidence as active work.
+4. Preserve a public same date recovery route when final completion persistence fails.
+5. Resume active work before returning an already validated result.
+6. Reject generation success while requested dates retain active pending work.
+7. Make completion replay idempotent so a valid consumed receipt cannot rewrite canonical output.
+8. Recheck every live completion artifact and the completion record before reporting success.
+9. Reject stable named archives unless the exact Git ref contains exact stable metadata and no runtime data roots.
+10. Verify checksums, inventory, and commit sidecars against the exact archive.
+11. Check out, privacy scan, compile, and run all three suites against the exact release ref before artifact upload.
+
 ## 0.1.0 alpha 5
 
 Corrects fail closed pending run inspection after independent review of the public alpha 4 candidate and records the verified Ubuntu under WSL support boundary.

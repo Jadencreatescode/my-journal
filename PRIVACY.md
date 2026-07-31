@@ -16,7 +16,7 @@ Unattended generation runs with the dedicated `my-journal-generation` toolset. T
 
 ## Public provenance policy
 
-The alpha uses stable nonreversible coverage references. Raw session identifiers, chat identifiers, thread identifiers, and absolute database paths are not published in evidence artifacts. No reversible private identifier map is created.
+The stable release uses nonreversible coverage references. Raw session identifiers, chat identifiers, thread identifiers, and absolute database paths are not published in evidence artifacts. No reversible private identifier map is created.
 
 ## Redaction limits
 
