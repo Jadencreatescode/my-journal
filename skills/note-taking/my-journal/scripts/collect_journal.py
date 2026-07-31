@@ -861,12 +861,17 @@ def write_run(
         "run_id": run_id,
         "journal_date": journal_date,
         "manifest_path": str(manifest_path),
-        "packet_path": str(packet_paths[0]) if len(packet_paths) == 1 else None,
+        "packet_path": str(packet_paths[0]),
         "packet_paths": [str(path) for path in packet_paths],
         "packet_plan_path": str(packet_plan_path),
         "status": "pending_note_validation",
     }
-    atomic_write_text(pending_path, json.dumps(pending, indent=2) + "\n", trusted_root=output_dir)
+    atomic_write_text(
+        pending_path,
+        json.dumps(pending, indent=2) + "\n",
+        trusted_root=output_dir,
+        temporary_parent=output_dir,
+    )
     return {**pending, "pending_path": str(pending_path), "coverage": manifest["coverage"]}
 
 

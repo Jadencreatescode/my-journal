@@ -15,8 +15,15 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
-from .core import _safe_files, journal_status, validated_entry_dates
-from .tools import _completion_evidence_valid, _missing_days, _pending_for_date, journal_root
+from .core import (
+    _safe_files,
+    journal_status,
+    read_pending_receipts,
+    validate_completed_state,
+    validate_pending_receipt,
+    validated_entry_dates,
+)
+from .tools import _completion_evidence_valid, _missing_days, journal_root
 
 
 PURGE_DIRECTORIES = (
@@ -26,7 +33,9 @@ _GENERATION_RECEIPT = re.compile(r"generation-[0-9a-f]{16}\.json")
 _GENERATION_LOCK = re.compile(r"generation-[0-9a-f]{16}\.lock")
 _OWNED_ATOMIC_TEMP = re.compile(
     r"\.(?:cron-job|cron-job-intent)\.json\.[0-9a-f]{48}\.tmp"
-    r"|\.generation-[0-9a-f]{16}\.json\.[0-9a-f]{48}\.tmp"
+    r"|\.generation-[0-9a-f]{16}\.json\.(?:[0-9a-f]{24}|[0-9a-f]{48})\.tmp"
+    r"|\.[0-9a-f]{16}\.json\.[0-9a-f]{24}\.tmp"
+    r"|\.(?:database-size-approvals|daily-workload-approval)\.json\.[0-9a-f]{24}\.tmp"
 )
 _CRON_RECEIPT = "cron-job.json"
 _CRON_INTENT = "cron-job-intent.json"
@@ -326,22 +335,22 @@ def run_generation(request: str, *, expected_dates: list[str]) -> dict:
             else set()
         )
         missing = [value for value in expected_dates if value not in available]
-        active_pending = [
-            value for value in expected_dates if _pending_for_date(value) is not None
-        ]
+        active_pending = _active_pending_dates(root, expected_dates)
         ok = completed.returncode == 0 and not missing and not active_pending
-        error = None
-        if completed.returncode != 0:
-            error = completed.stderr.strip() or "journal generation process failed"
-        elif missing:
+        error = completed.stderr.strip() or None if completed.returncode != 0 else None
+        if completed.returncode != 0 and error is None:
+            error = "journal generation process failed"
+        elif completed.returncode == 0 and missing:
             error = "generation finished without validated canonical entries for: " + ", ".join(missing)
-        elif active_pending:
-            error = "generation finished with active pending work for: " + ", ".join(active_pending)
-        ledger.update({
-            "status": "completed" if ok else "failed",
-            "missing_dates": missing,
-            "active_pending_dates": active_pending,
-        })
+        elif completed.returncode == 0 and active_pending:
+            error = "generation finished with active pending runs for: " + ", ".join(active_pending)
+        ledger.update(
+            {
+                "status": "completed" if ok else "failed",
+                "missing_dates": missing,
+                "active_pending_dates": active_pending,
+            }
+        )
         _safe_files.safe_atomic_write_text(root, ledger_path, json.dumps(ledger, indent=2) + "\n")
         return {
             "ok": ok,
@@ -561,19 +570,44 @@ def preview(range_text: str) -> dict:
     return _missing_days(range_text)
 
 
+def _pending_receipt_is_completed(root: Path, path: Path, receipt: dict | None = None) -> bool:
+    if receipt is not None:
+        try:
+            validate_pending_receipt(receipt, expected_run_id=path.stem)
+        except (TypeError, ValueError):
+            return False
+    return _completion_evidence_valid(root, path)
+
+
+def _active_pending_dates(root: Path, expected_dates: list[str]) -> list[str]:
+    expected = set(expected_dates)
+    try:
+        receipts = read_pending_receipts(root)
+    except (FileNotFoundError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return sorted(expected)
+    active: set[str] = set()
+    for item, receipt in receipts:
+        try:
+            receipt = validate_pending_receipt(receipt, expected_run_id=item.stem)
+        except (TypeError, ValueError):
+            active.update(expected)
+            continue
+        journal_date = receipt.get("journal_date")
+        if not isinstance(journal_date, str):
+            active.update(expected)
+        elif journal_date in expected and not _pending_receipt_is_completed(root, item, receipt):
+            active.add(journal_date)
+    return sorted(active)
+
+
 def maintenance() -> dict:
-    root = journal_root()
+    root = journal_root().expanduser().absolute()
     status = journal_status(root)
-    pending = root / "pending"
-    pending_count = 0
-    if pending.is_dir() and not pending.is_symlink():
-        pending_count = sum(
-            1
-            for item in pending.iterdir()
-            if item.is_file()
-            and not item.is_symlink()
-            and not _completion_evidence_valid(root, item)
-        )
+    pending_count = sum(
+        1
+        for item, receipt in read_pending_receipts(root)
+        if not _pending_receipt_is_completed(root, item, receipt)
+    )
     return {**status, "pending_run_count": pending_count}
 
 

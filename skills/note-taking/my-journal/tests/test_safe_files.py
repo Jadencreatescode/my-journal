@@ -113,6 +113,146 @@ class SafeFileTests(unittest.TestCase):
             self.assertEqual((root / "state-original" / "entry.json").read_text(encoding="utf-8"), "new")
             self.assertEqual(external_target.read_text(encoding="utf-8"), "evil")
 
+    def test_atomic_write_can_stage_temporary_file_outside_destination_parent(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "journal"
+            pending = root / "pending"
+            pending.mkdir(parents=True)
+            target = pending / f"{'a' * 16}.json"
+            observed = {}
+            real_open = os.open
+
+            def recording_open(path, flags, mode=0o777, *, dir_fd=None):
+                descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+                if str(path).startswith(f".{target.name}."):
+                    observed["pending_names"] = sorted(item.name for item in pending.iterdir())
+                    observed["root_names"] = sorted(item.name for item in root.iterdir())
+                return descriptor
+
+            with mock.patch.object(module.os, "open", side_effect=recording_open):
+                module.safe_atomic_write_text(
+                    root,
+                    target,
+                    "receipt",
+                    temporary_parent=root,
+                )
+
+            self.assertEqual(observed["pending_names"], [])
+            self.assertTrue(any(name.startswith(f".{target.name}.") for name in observed["root_names"]))
+            self.assertEqual(target.read_text(encoding="utf-8"), "receipt")
+
+    def test_atomic_write_rejects_parent_traversal_in_target_and_staging_directory(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "journal"
+            pending = root / "pending"
+            pending.mkdir(parents=True)
+            target = pending / f"{'d' * 16}.json"
+
+            with self.assertRaisesRegex(ValueError, "parent traversal"):
+                module.safe_atomic_write_text(
+                    root,
+                    root / "pending" / ".." / ".." / "outside.json",
+                    "unsafe",
+                )
+            with self.assertRaisesRegex(ValueError, "parent traversal"):
+                module.safe_atomic_write_text(
+                    root,
+                    target,
+                    "unsafe",
+                    temporary_parent=root / "staging" / "..",
+                )
+
+    def test_atomic_write_preserves_original_error_when_temp_cleanup_fails(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "journal"
+            pending = root / "pending"
+            pending.mkdir(parents=True)
+            target = pending / f"{'e' * 16}.json"
+
+            with mock.patch.object(module.os, "write", side_effect=OSError("write failed")), mock.patch.object(
+                module.os,
+                "unlink",
+                side_effect=OSError("cleanup failed"),
+            ):
+                with self.assertRaisesRegex(OSError, "write failed"):
+                    module.safe_atomic_write_text(
+                        root,
+                        target,
+                        "receipt",
+                        temporary_parent=root,
+                    )
+
+    def test_staged_atomic_write_remains_bound_when_root_is_replaced(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "journal"
+            pending = root / "pending"
+            pending.mkdir(parents=True)
+            target = pending / f"{'b' * 16}.json"
+            moved = base / "journal-original"
+            external = base / "external"
+            external.mkdir()
+            real_open = os.open
+            swapped = False
+
+            def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if str(path).startswith(f".{target.name}.") and dir_fd is not None and not swapped:
+                    swapped = True
+                    root.rename(moved)
+                    root.symlink_to(external, target_is_directory=True)
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            with mock.patch.object(module.os, "open", side_effect=racing_open):
+                module.safe_atomic_write_text(
+                    root,
+                    target,
+                    "receipt",
+                    temporary_parent=root,
+                )
+
+            self.assertTrue(swapped)
+            self.assertEqual((moved / "pending" / target.name).read_text(encoding="utf-8"), "receipt")
+            self.assertEqual(list(external.iterdir()), [])
+
+    def test_staged_atomic_write_remains_bound_when_destination_parent_is_replaced(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "journal"
+            pending = root / "pending"
+            pending.mkdir(parents=True)
+            target = pending / f"{'c' * 16}.json"
+            moved = root / "pending-original"
+            external = base / "external"
+            external.mkdir()
+            real_open = os.open
+            swapped = False
+
+            def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if str(path).startswith(f".{target.name}.") and dir_fd is not None and not swapped:
+                    swapped = True
+                    pending.rename(moved)
+                    pending.symlink_to(external, target_is_directory=True)
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            with mock.patch.object(module.os, "open", side_effect=racing_open):
+                module.safe_atomic_write_text(
+                    root,
+                    target,
+                    "receipt",
+                    temporary_parent=root,
+                )
+
+            self.assertTrue(swapped)
+            self.assertEqual((moved / target.name).read_text(encoding="utf-8"), "receipt")
+            self.assertEqual(list(external.iterdir()), [])
+
     def test_read_remains_anchored_when_parent_is_swapped_for_symlink(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

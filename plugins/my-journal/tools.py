@@ -12,7 +12,16 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from .core import _safe_files, journal_status, read_validated_entries, resolve_date_range, validated_entry_dates
+from .core import (
+    _safe_files,
+    journal_status,
+    read_pending_receipts,
+    read_validated_entries,
+    resolve_date_range,
+    validate_completed_state,
+    validate_pending_receipt,
+    validated_entry_dates,
+)
 from .onboarding import (
     approve_database_size,
     approve_daily_workload,
@@ -246,18 +255,17 @@ def _validated_run_id(value: Any) -> str:
     return value
 
 
-def _validated_pending_run(run_id: str, text: str) -> dict[str, Any]:
-    value = json.loads(text)
-    if not isinstance(value, dict) or value.get("run_id") != run_id:
-        raise ValueError("pending run receipt is malformed")
-    for field in ("journal_date", "manifest_path", "packet_plan_path"):
-        if not isinstance(value.get(field), str) or not value[field]:
-            raise ValueError(f"pending run receipt is missing {field}")
-    _validated_day(value["journal_date"])
-    return value
+def _pending_run(run_id: str) -> dict[str, Any]:
+    run_id = _validated_run_id(run_id)
+    root = journal_root().expanduser().absolute()
+    path = root / "pending" / f"{run_id}.json"
+    value = json.loads(_safe_files.safe_read_text(root, path, max_bytes=100_000))
+    return validate_pending_receipt(value, expected_run_id=run_id)
 
 
-def _read_descriptor_text(descriptor: int, *, max_bytes: int) -> tuple[str, os.stat_result]:
+def _read_descriptor_bytes(
+    descriptor: int, *, max_bytes: int
+) -> tuple[bytes, os.stat_result]:
     metadata = os.fstat(descriptor)
     if metadata.st_size > max_bytes:
         raise ValueError("file exceeds configured byte limit")
@@ -271,16 +279,15 @@ def _read_descriptor_text(descriptor: int, *, max_bytes: int) -> tuple[str, os.s
         total += len(chunk)
         if total > max_bytes:
             raise ValueError("file exceeds configured byte limit")
-    try:
-        return b"".join(chunks).decode("utf-8"), metadata
-    except UnicodeDecodeError as exc:
-        raise ValueError("file is not valid UTF8") from exc
+    return b"".join(chunks), metadata
 
 
-def _read_text_identity(root: Path, path: Path, *, max_bytes: int) -> tuple[str, os.stat_result]:
+def _read_bytes_identity(
+    root: Path, path: Path, *, max_bytes: int
+) -> tuple[bytes, os.stat_result]:
     descriptor = _safe_files.safe_open_regular_fd(root, path)
     try:
-        return _read_descriptor_text(descriptor, max_bytes=max_bytes)
+        return _read_descriptor_bytes(descriptor, max_bytes=max_bytes)
     finally:
         os.close(descriptor)
 
@@ -293,141 +300,173 @@ def _identity_matches(value: Any, metadata: os.stat_result) -> bool:
     return isinstance(value, dict) and value == _identity_record(metadata)
 
 
-def _valid_completed_state(
-    value: Any,
-    *,
-    run_id: str,
-    journal_date: str,
-    manifest_path: Path,
-    canonical: Path,
-    digest_dir: Path,
-) -> bool:
-    expected = {
-        "status": "completed",
-        "run_id": run_id,
-        "journal_date": journal_date,
-        "manifest_path": str(manifest_path),
-        "note_path": str(canonical),
-        "digest_dir": str(digest_dir),
-    }
-    return (
-        isinstance(value, dict)
-        and all(value.get(key) == expected_value for key, expected_value in expected.items())
-        and isinstance(value.get("coverage"), dict)
-        and isinstance(value.get("validated_at"), str)
-        and bool(value["validated_at"].strip())
-    )
-
-
-def _pending_run(run_id: str) -> dict[str, Any]:
-    run_id = _validated_run_id(run_id)
-    root = journal_root().expanduser().absolute()
-    path = root / "pending" / f"{run_id}.json"
-    return _validated_pending_run(
-        run_id, _safe_files.safe_read_text(root, path, max_bytes=100_000)
-    )
+def _decode_pending_receipt(data: bytes, *, expected_run_id: str) -> dict[str, Any]:
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ValueError("pending run receipt is not valid UTF8") from exc
+    return validate_pending_receipt(value, expected_run_id=expected_run_id)
 
 
 def _pending_run_for_completion(
     run_id: str,
-) -> tuple[dict[str, Any], str, int, tuple[int, int]]:
+) -> tuple[dict[str, Any], bytes, int, tuple[int, int]]:
     run_id = _validated_run_id(run_id)
     root = journal_root().expanduser().absolute()
     path = root / "pending" / f"{run_id}.json"
     descriptor = _safe_files.safe_open_regular_fd(root, path)
     try:
-        text, metadata = _read_descriptor_text(descriptor, max_bytes=100_000)
-        value = _validated_pending_run(run_id, text)
-        return value, text, descriptor, (metadata.st_dev, metadata.st_ino)
+        data, metadata = _read_descriptor_bytes(descriptor, max_bytes=100_000)
+        value = _decode_pending_receipt(data, expected_run_id=run_id)
+        return value, data, descriptor, (metadata.st_dev, metadata.st_ino)
     except BaseException:
         os.close(descriptor)
         raise
 
 
+_COMPLETION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "run_id",
+        "journal_date",
+        "receipt_path",
+        "receipt_sha256",
+        "receipt_identity",
+        "archived_receipt_path",
+        "archive_sha256",
+        "archive_identity",
+        "state_path",
+        "state_sha256",
+        "state_identity",
+        "manifest_path",
+        "manifest_sha256",
+        "manifest_identity",
+        "canonical_note_path",
+        "canonical_sha256",
+        "canonical_identity",
+    }
+)
+
+
 def _completion_evidence_valid(root: Path, pending_path: Path) -> bool:
-    """Return true only when one physical pending receipt has a complete validated publication chain."""
+    """Accept logical consumption only for one complete physical publication chain."""
     try:
-        if pending_path.is_symlink() or _RUN_ID.fullmatch(pending_path.stem) is None:
+        if _RUN_ID.fullmatch(pending_path.stem) is None:
             return False
         run_id = pending_path.stem
-        pending_text, pending_metadata = _read_text_identity(
+        receipt_bytes, receipt_metadata = _read_bytes_identity(
             root, pending_path, max_bytes=100_000
         )
-        pending = _validated_pending_run(run_id, pending_text)
-        journal_date = pending["journal_date"]
+        receipt = _decode_pending_receipt(receipt_bytes, expected_run_id=run_id)
+        journal_date = receipt["journal_date"]
         year, month, _ = journal_date.split("-")
         run_dir = root / "runs" / run_id
-        digest_dir = run_dir / "digests"
-        archived_receipt = run_dir / "completed-pending-receipt.json"
+        archive_path = run_dir / "completed-pending-receipt.json"
         completion_path = run_dir / "completion.json"
-        canonical = root / "notes" / year / month / f"{journal_date}.md"
         state_path = root / "state" / f"{journal_date}-{run_id}.json"
-        archived_text, archived_metadata = _read_text_identity(
-            root, archived_receipt, max_bytes=100_000
+        canonical_path = root / "notes" / year / month / f"{journal_date}.md"
+
+        archive_bytes, archive_metadata = _read_bytes_identity(
+            root, archive_path, max_bytes=100_000
         )
-        if archived_text != pending_text:
+        if archive_bytes != receipt_bytes:
             return False
-        state_text, state_metadata = _read_text_identity(
+        state_bytes, state_metadata = _read_bytes_identity(
             root, state_path, max_bytes=1_000_000
         )
-        state = json.loads(state_text)
-        if not _valid_completed_state(
-            state,
-            run_id=run_id,
-            journal_date=journal_date,
-            manifest_path=Path(pending["manifest_path"]),
-            canonical=canonical,
-            digest_dir=digest_dir,
+        state = validate_completed_state(json.loads(state_bytes.decode("utf-8")), receipt, root)
+        manifest_path = Path(receipt["manifest_path"])
+        manifest_bytes, manifest_metadata = _read_bytes_identity(
+            root, manifest_path, max_bytes=8_000_000
+        )
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+        if not isinstance(manifest, dict) or any(
+            (
+                manifest.get("run_id") != run_id,
+                manifest.get("journal_date") != journal_date,
+                manifest.get("coverage") != state.get("coverage"),
+            )
         ):
             return False
-        _, canonical_metadata = _read_text_identity(root, canonical, max_bytes=8_000_000)
-        completion = json.loads(
-            _safe_files.safe_read_text(root, completion_path, max_bytes=100_000)
+        canonical_bytes, canonical_metadata = _read_bytes_identity(
+            root, canonical_path, max_bytes=8_000_000
         )
-        receipt_sha256 = hashlib.sha256(pending_text.encode("utf-8")).hexdigest()
+        completion_bytes, completion_metadata = _read_bytes_identity(
+            root, completion_path, max_bytes=100_000
+        )
+        completion = json.loads(completion_bytes.decode("utf-8"))
+        if not isinstance(completion, dict) or set(completion) != _COMPLETION_FIELDS:
+            return False
         expected = {
             "schema_version": 1,
             "status": "completed",
             "run_id": run_id,
             "journal_date": journal_date,
-            "receipt_sha256": receipt_sha256,
-            "archived_receipt_path": str(archived_receipt),
-            "canonical_note_path": str(canonical),
+            "receipt_path": str(pending_path),
+            "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+            "archived_receipt_path": str(archive_path),
+            "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
             "state_path": str(state_path),
+            "state_sha256": hashlib.sha256(state_bytes).hexdigest(),
+            "manifest_path": str(manifest_path),
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "canonical_note_path": str(canonical_path),
+            "canonical_sha256": hashlib.sha256(canonical_bytes).hexdigest(),
         }
-        if not isinstance(completion, dict) or any(
-            completion.get(key) != value for key, value in expected.items()
+        if any(completion.get(key) != value for key, value in expected.items()):
+            return False
+        if not all(
+            (
+                _identity_matches(completion.get("receipt_identity"), receipt_metadata),
+                _identity_matches(completion.get("archive_identity"), archive_metadata),
+                _identity_matches(completion.get("state_identity"), state_metadata),
+                _identity_matches(completion.get("manifest_identity"), manifest_metadata),
+                _identity_matches(completion.get("canonical_identity"), canonical_metadata),
+            )
         ):
             return False
-        if not all((
-            _identity_matches(completion.get("receipt_identity"), pending_metadata),
-            _identity_matches(completion.get("archive_identity"), archived_metadata),
-            _identity_matches(completion.get("state_identity"), state_metadata),
-            _identity_matches(completion.get("canonical_identity"), canonical_metadata),
-        )):
-            return False
         day = date.fromisoformat(journal_date)
-        return journal_date in validated_entry_dates(root, day, day)
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        if journal_date not in validated_entry_dates(root, day, day):
+            return False
+        artifacts = (
+            (pending_path, receipt_bytes, receipt_metadata, 100_000),
+            (archive_path, archive_bytes, archive_metadata, 100_000),
+            (state_path, state_bytes, state_metadata, 1_000_000),
+            (manifest_path, manifest_bytes, manifest_metadata, 8_000_000),
+            (canonical_path, canonical_bytes, canonical_metadata, 8_000_000),
+            (completion_path, completion_bytes, completion_metadata, 100_000),
+        )
+        for path, expected_bytes, expected_metadata, max_bytes in artifacts:
+            current_bytes, current_metadata = _read_bytes_identity(
+                root, path, max_bytes=max_bytes
+            )
+            if current_bytes != expected_bytes or (
+                current_metadata.st_dev,
+                current_metadata.st_ino,
+            ) != (expected_metadata.st_dev, expected_metadata.st_ino):
+                return False
+        return True
+    except (
+        FileNotFoundError,
+        OSError,
+        UnicodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
         return False
 
 
 def _pending_for_date(journal_date: str) -> dict[str, Any] | None:
     root = journal_root().expanduser().absolute()
-    pending = root / "pending"
-    if not pending.is_dir() or pending.is_symlink():
-        return None
-    paths = sorted(pending.glob("*.json"))
-    if len(paths) > _MAX_PENDING_RUNS:
-        raise ValueError("pending run count exceeds compiled ceiling")
     matches: list[dict[str, Any]] = []
-    for path in paths:
-        if path.is_symlink() or _RUN_ID.fullmatch(path.stem) is None:
-            raise ValueError("pending run directory contains an unsafe receipt")
+    for path, value in read_pending_receipts(root):
+        value = validate_pending_receipt(value, expected_run_id=path.stem)
         if _completion_evidence_valid(root, path):
             continue
-        value = json.loads(_safe_files.safe_read_text(root, path, max_bytes=100_000))
-        if isinstance(value, dict) and value.get("journal_date") == journal_date:
+        if value.get("journal_date") == journal_date:
             matches.append(value)
     if len(matches) > 1:
         raise ValueError("multiple pending collection runs exist for journal date")
@@ -621,9 +660,19 @@ def _generation_complete_with_pending(
     journal_date: str,
     sections: dict[str, Any],
     pending: dict[str, Any],
-    pending_text: str,
+    pending_bytes: bytes,
     pending_identity: tuple[int, int],
 ) -> dict[str, Any]:
+    root = journal_root().expanduser().absolute()
+    pending_path = root / "pending" / f"{run_id}.json"
+    current_bytes, current_metadata = _read_bytes_identity(
+        root, pending_path, max_bytes=100_000
+    )
+    if current_bytes != pending_bytes or (
+        current_metadata.st_dev,
+        current_metadata.st_ino,
+    ) != pending_identity:
+        raise ValueError("pending receipt identity changed before logical completion")
     if pending["journal_date"] != journal_date:
         raise ValueError("journal_date does not match the pending run")
     plan_path = Path(pending["packet_plan_path"])
@@ -650,7 +699,6 @@ def _generation_complete_with_pending(
     ))
     if errors:
         raise ValueError("synthesis validation failed: " + "; ".join(str(item) for item in errors[:20]))
-    root = journal_root().expanduser().absolute()
     year, month, _ = journal_date.split("-")
     canonical = root / "notes" / year / month / f"{journal_date}.md"
     state_path = root / "state" / f"{journal_date}-{run_id}.json"
@@ -676,60 +724,72 @@ def _generation_complete_with_pending(
             else:
                 _safe_files.safe_atomic_write_text(root, path, previous)
         raise
-    completed_receipt = root / "runs" / run_id / "completed-pending-receipt.json"
-    completion_path = root / "runs" / run_id / "completion.json"
-    pending_path = root / "pending" / f"{run_id}.json"
-    current_pending_text, current_pending_metadata = _read_text_identity(
+    current_bytes, current_metadata = _read_bytes_identity(
         root, pending_path, max_bytes=100_000
     )
-    if current_pending_text != pending_text or (
-        current_pending_metadata.st_dev,
-        current_pending_metadata.st_ino,
+    if current_bytes != pending_bytes or (
+        current_metadata.st_dev,
+        current_metadata.st_ino,
     ) != pending_identity:
         raise ValueError("pending receipt identity changed before logical completion")
-    _safe_files.safe_mkdir_tree(root, completed_receipt.parent)
-    _safe_files.safe_atomic_write_text(root, completed_receipt, pending_text)
-    archived_text, archived_metadata = _read_text_identity(
-        root, completed_receipt, max_bytes=100_000
+    archive_path = root / "runs" / run_id / "completed-pending-receipt.json"
+    completion_path = root / "runs" / run_id / "completion.json"
+    _safe_files.safe_mkdir_tree(root, archive_path.parent)
+    try:
+        archive_text = pending_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("pending run receipt is not valid UTF8") from exc
+    _safe_files.safe_atomic_write_text(root, archive_path, archive_text)
+    archive_bytes, archive_metadata = _read_bytes_identity(
+        root, archive_path, max_bytes=100_000
     )
-    if archived_text != pending_text:
-        raise ValueError("completed receipt archive does not match validated pending receipt")
-    state_text, state_metadata = _read_text_identity(root, state_path, max_bytes=1_000_000)
-    state = json.loads(state_text)
-    if not _valid_completed_state(
-        state,
-        run_id=run_id,
-        journal_date=journal_date,
-        manifest_path=manifest_path,
-        canonical=canonical,
-        digest_dir=digest_dir,
-    ):
-        raise ValueError("completed journal state is malformed")
-    _, canonical_metadata = _read_text_identity(root, canonical, max_bytes=8_000_000)
+    if archive_bytes != pending_bytes:
+        raise ValueError("completed receipt archive does not match validated pending receipt bytes")
+    state_bytes, state_metadata = _read_bytes_identity(
+        root, state_path, max_bytes=1_000_000
+    )
+    validate_completed_state(json.loads(state_bytes.decode("utf-8")), pending, root)
+    manifest_bytes, manifest_metadata = _read_bytes_identity(
+        root, manifest_path, max_bytes=8_000_000
+    )
+    canonical_bytes, canonical_metadata = _read_bytes_identity(
+        root, canonical, max_bytes=8_000_000
+    )
     completion = {
         "schema_version": 1,
         "status": "completed",
         "run_id": run_id,
         "journal_date": journal_date,
-        "receipt_sha256": hashlib.sha256(pending_text.encode("utf-8")).hexdigest(),
-        "receipt_identity": _identity_record(current_pending_metadata),
-        "archive_identity": _identity_record(archived_metadata),
-        "state_identity": _identity_record(state_metadata),
-        "canonical_identity": _identity_record(canonical_metadata),
-        "archived_receipt_path": str(completed_receipt),
-        "canonical_note_path": str(canonical),
+        "receipt_path": str(pending_path),
+        "receipt_sha256": hashlib.sha256(pending_bytes).hexdigest(),
+        "receipt_identity": _identity_record(current_metadata),
+        "archived_receipt_path": str(archive_path),
+        "archive_sha256": hashlib.sha256(archive_bytes).hexdigest(),
+        "archive_identity": _identity_record(archive_metadata),
         "state_path": str(state_path),
+        "state_sha256": hashlib.sha256(state_bytes).hexdigest(),
+        "state_identity": _identity_record(state_metadata),
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "manifest_identity": _identity_record(manifest_metadata),
+        "canonical_note_path": str(canonical),
+        "canonical_sha256": hashlib.sha256(canonical_bytes).hexdigest(),
+        "canonical_identity": _identity_record(canonical_metadata),
     }
     _safe_files.safe_atomic_write_text(
-        root, completion_path, json.dumps(completion, indent=2, sort_keys=True) + "\n"
+        root,
+        completion_path,
+        json.dumps(completion, indent=2, sort_keys=True) + "\n",
     )
+    if not _completion_evidence_valid(root, pending_path):
+        raise ValueError("completion evidence changed before success could be reported")
     return {
         "ok": True,
         "journal_date": journal_date,
         "run_id": run_id,
         "canonical_note_path": str(canonical),
         "state_path": str(state_path),
-        "completed_receipt_path": str(completed_receipt),
+        "completed_receipt_path": str(archive_path),
         "completion_path": str(completion_path),
         "validated_entry_dates": [journal_date],
     }
@@ -738,18 +798,40 @@ def _generation_complete_with_pending(
 def _generation_complete(run_id: str, journal_date: str, sections: dict[str, Any]) -> dict[str, Any]:
     run_id = _validated_run_id(run_id)
     journal_date = _validated_day(journal_date)
-    pending, pending_text, pending_descriptor, pending_identity = _pending_run_for_completion(run_id)
+    pending, pending_bytes, descriptor, pending_identity = _pending_run_for_completion(run_id)
     try:
+        if pending["journal_date"] != journal_date:
+            raise ValueError("journal_date does not match the pending run")
+        root = journal_root().expanduser().absolute()
+        pending_path = root / "pending" / f"{run_id}.json"
+        if _completion_evidence_valid(root, pending_path):
+            year, month, _ = journal_date.split("-")
+            run_dir = root / "runs" / run_id
+            return {
+                "ok": True,
+                "already_completed": True,
+                "journal_date": journal_date,
+                "run_id": run_id,
+                "canonical_note_path": str(
+                    root / "notes" / year / month / f"{journal_date}.md"
+                ),
+                "state_path": str(root / "state" / f"{journal_date}-{run_id}.json"),
+                "completed_receipt_path": str(
+                    run_dir / "completed-pending-receipt.json"
+                ),
+                "completion_path": str(run_dir / "completion.json"),
+                "validated_entry_dates": [journal_date],
+            }
         return _generation_complete_with_pending(
             run_id,
             journal_date,
             sections,
             pending,
-            pending_text,
+            pending_bytes,
             pending_identity,
         )
     finally:
-        os.close(pending_descriptor)
+        os.close(descriptor)
 
 
 def handle_generation_complete(args: dict, **kwargs) -> str:

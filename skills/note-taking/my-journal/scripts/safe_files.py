@@ -71,16 +71,25 @@ def _open_or_create_directory(path: Path, mode: int) -> int:
         raise
 
 
-def _relative_target(root: Path, target: Path) -> tuple[Path, tuple[str, ...]]:
-    root_absolute = root.expanduser().absolute()
-    target_absolute = target.expanduser().absolute()
+def _relative_path(root: Path, target: Path) -> tuple[Path, tuple[str, ...]]:
+    root_input = root.expanduser().absolute()
+    target_input = target.expanduser().absolute()
+    if ".." in root_input.parts or ".." in target_input.parts:
+        raise ValueError("parent traversal is not allowed")
+    root_absolute = canonical_descriptor_path(root_input)
+    target_absolute = canonical_descriptor_path(target_input)
     try:
         relative = target_absolute.relative_to(root_absolute)
     except ValueError as exc:
         raise ValueError("target is outside trusted root") from exc
-    if not relative.parts:
-        raise ValueError("target must be below trusted root")
     return root_absolute, tuple(relative.parts)
+
+
+def _relative_target(root: Path, target: Path) -> tuple[Path, tuple[str, ...]]:
+    root_absolute, parts = _relative_path(root, target)
+    if not parts:
+        raise ValueError("target must be below trusted root")
+    return root_absolute, parts
 
 
 def _open_parent(root: Path, target: Path) -> tuple[int, str]:
@@ -218,26 +227,56 @@ def safe_unlink(root: Path, target: Path, *, missing_ok: bool = False) -> None:
             os.close(parent_descriptor)
 
 
-def safe_atomic_write_text(root: Path, target: Path, text: str) -> None:
+def safe_atomic_write_text(
+    root: Path,
+    target: Path,
+    text: str,
+    *,
+    temporary_parent: Path | None = None,
+) -> None:
     """Atomically replace one UTF8 file beneath root without path re-resolution."""
+    root_descriptor: int | None = None
     parent_descriptor: int | None = None
+    temporary_parent_descriptor: int | None = None
     temporary_name: str | None = None
     temporary_descriptor: int | None = None
     try:
-        parent_descriptor, name = _open_parent(root, target)
+        root_absolute, target_parts = _relative_target(root, target)
+        root_descriptor = _open_directory(root_absolute)
+        parent_descriptor = os.dup(root_descriptor)
+        for part in target_parts[:-1]:
+            next_descriptor = os.open(part, _DIRECTORY_FLAGS, dir_fd=parent_descriptor)
+            os.close(parent_descriptor)
+            parent_descriptor = next_descriptor
+        name = target_parts[-1]
         try:
             existing = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
         except FileNotFoundError:
             existing = None
         if existing is not None and stat.S_ISLNK(existing.st_mode):
             raise ValueError("target must not be a symlink")
+        if temporary_parent is None:
+            temporary_parent_descriptor = parent_descriptor
+        else:
+            temporary_root, temporary_parts = _relative_path(root, temporary_parent)
+            if temporary_root != root_absolute:
+                raise ValueError("temporary parent is outside trusted root")
+            temporary_parent_descriptor = os.dup(root_descriptor)
+            for part in temporary_parts:
+                next_descriptor = os.open(
+                    part,
+                    _DIRECTORY_FLAGS,
+                    dir_fd=temporary_parent_descriptor,
+                )
+                os.close(temporary_parent_descriptor)
+                temporary_parent_descriptor = next_descriptor
         temporary_name = f".{name}.{secrets.token_hex(12)}.tmp"
         temporary_descriptor = os.open(
             temporary_name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL
             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
             0o600,
-            dir_fd=parent_descriptor,
+            dir_fd=temporary_parent_descriptor,
         )
         data = text.encode("utf-8")
         written = 0
@@ -252,10 +291,12 @@ def safe_atomic_write_text(root: Path, target: Path, text: str) -> None:
         os.replace(
             temporary_name,
             name,
-            src_dir_fd=parent_descriptor,
+            src_dir_fd=temporary_parent_descriptor,
             dst_dir_fd=parent_descriptor,
         )
         temporary_name = None
+        if temporary_parent_descriptor != parent_descriptor:
+            os.fsync(temporary_parent_descriptor)
         os.fsync(parent_descriptor)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
@@ -264,10 +305,17 @@ def safe_atomic_write_text(root: Path, target: Path, text: str) -> None:
     finally:
         if temporary_descriptor is not None:
             os.close(temporary_descriptor)
-        if temporary_name is not None and parent_descriptor is not None:
+        if temporary_name is not None and temporary_parent_descriptor is not None:
             try:
-                os.unlink(temporary_name, dir_fd=parent_descriptor)
-            except FileNotFoundError:
+                os.unlink(temporary_name, dir_fd=temporary_parent_descriptor)
+            except OSError:
                 pass
+        if (
+            temporary_parent_descriptor is not None
+            and temporary_parent_descriptor != parent_descriptor
+        ):
+            os.close(temporary_parent_descriptor)
         if parent_descriptor is not None:
             os.close(parent_descriptor)
+        if root_descriptor is not None:
+            os.close(root_descriptor)

@@ -23,6 +23,42 @@ def load_core():
     return module
 
 
+class PendingReceiptValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.core = load_core()
+        self.receipt = {
+            "run_id": "a" * 16,
+            "journal_date": "2026-07-27",
+            "manifest_path": "/journal/evidence/manifest.json",
+            "packet_path": "/journal/packets/chunk-000001.md",
+            "packet_paths": ["/journal/packets/chunk-000001.md"],
+            "packet_plan_path": "/journal/packets/plan.json",
+            "status": "pending_note_validation",
+        }
+
+    def test_pending_receipt_requires_primary_packet_path(self):
+        value = dict(self.receipt)
+        del value["packet_path"]
+        with self.assertRaisesRegex(ValueError, "missing packet_path"):
+            self.core.validate_pending_receipt(value)
+
+    def test_pending_receipt_rejects_unknown_fields(self):
+        value = {**self.receipt, "unexpected": "tampered"}
+        with self.assertRaisesRegex(ValueError, "unexpected fields"):
+            self.core.validate_pending_receipt(value)
+
+    def test_pending_receipt_requires_primary_packet_to_be_first_packet(self):
+        value = {
+            **self.receipt,
+            "packet_paths": [
+                "/journal/packets/chunk-000002.md",
+                "/journal/packets/chunk-000001.md",
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "packet_path must equal first packet_paths item"):
+            self.core.validate_pending_receipt(value)
+
+
 class DateRangeTests(unittest.TestCase):
     def setUp(self):
         self.core = load_core()
