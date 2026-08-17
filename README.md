@@ -1,8 +1,25 @@
 # My Journal for Hermes
 
-**The evidence backed activity journal for Hermes.**
+**See how your work actually moved forward.**
 
-My Journal `0.1.0` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines guided first use, bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, 11 deterministic journal tools, four restricted generation tools, and the scriptable `hermes journal` command family.
+My Journal turns the Hermes conversations you approve into an evidence backed daily record of decisions, changes, failed attempts, verification, blockers, and open work. It gives long projects a readable timeline without turning the whole journal into agent memory.
+
+[![Watch the My Journal functionality overview](docs/assets/my-journal-functionality-demo.png)](https://github.com/Jadencreatescode/my-journal/releases/download/v0.1.0/my-journal-functionality-overview.mp4)
+
+**Watch the 63 second functionality overview.** Every product capture uses synthetic data. The current video previews functionality in the active development build. The latest packaged public release remains `0.1.0`.
+
+## What it gives you
+
+1. **Daily progression, not another chat dump.** Each note separates what was discussed, decided, attempted, completed, verified, blocked, and corrected.
+2. **Scope you choose first.** Profiles, platforms, dates, timezone, privacy settings, exclusions, and workload limits are explicit before generation.
+3. **Evidence backed notes.** Read only collection creates bounded evidence, masks personal information, redacts likely secrets, and preserves nonreversible coverage references.
+4. **Historical backfill that can continue.** Approved activity dates run oldest first, and interrupted evidence can resume instead of being recollected.
+5. **Validated daily automation.** A restricted Journal writer cannot mark a date complete until the note and evidence reconcile.
+6. **Portable ownership.** Canonical entries are plain Markdown that you can read in Obsidian, search, sync, back up, or move.
+
+## Release status
+
+The stable public release is `0.1.0` for Linux and macOS. Ubuntu under WSL is supported as a Linux environment. Native Windows support and the hardened locked scheduling route are part of the upcoming `0.2.0` alpha line and remain a development preview until the matching source archive and cross platform release checks are published.
 
 Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` before enabling collection.
 
