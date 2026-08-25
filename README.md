@@ -10,6 +10,12 @@ It is a progression journal, not another memory system and not a raw transcript 
 
 The preview and every public example use synthetic data.
 
+## About the creator
+
+Jaden Gibson grew up in Las Vegas, a city whose constant reinvention helped shape his curiosity about how systems work. He immersed himself in coding out of genuine interest and learned by building practical tools that connect artificial intelligence, personal knowledge, and the devices people use every day.
+
+His current work includes My Journal for Hermes, which turns approved conversations into private, evidence backed daily progress notes, and the [Hermes Mobile Control Center](https://github.com/Jadencreatescode/hermes-mobile-community), which brings the Hermes desktop experience to phones and foldable devices. Both projects reflect a focus on useful software, user ownership, privacy, access across devices, and open collaboration.
+
 ## Why it is different
 
 | Raw chat history | Agent memory | My Journal |
