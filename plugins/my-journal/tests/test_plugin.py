@@ -9,6 +9,7 @@ import fcntl
 import sys
 import tempfile
 import unittest
+from datetime import date
 from contextlib import nullcontext
 from unittest import mock
 from pathlib import Path
@@ -731,11 +732,22 @@ class PluginRegistrationTests(unittest.TestCase):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
         completed = type("Completed", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        events = []
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False), mock.patch.object(
+            bridge_environment = {
+                "MY_JOURNAL_ROOT": tmp,
+                "MY_JOURNAL_WINDOWS_HERMES_HOME": r"C:\Users\exampleuser\AppData\Local\hermes",
+                "MY_JOURNAL_WINDOWS_JOURNAL_ROOT": r"C:\Users\exampleuser\AppData\Local\hermes\journal",
+            }
+            with mock.patch.dict(os.environ, bridge_environment, clear=False), mock.patch.object(
                 operations, "_hermes_executable", return_value="/hermes"
             ), mock.patch.object(
-                operations.subprocess, "run", return_value=completed
+                operations, "_generation_collect",
+                side_effect=lambda value: events.append(("collect", value)) or {"ok": True},
+                create=True,
+            ) as collect, mock.patch.object(
+                operations.subprocess, "run",
+                side_effect=lambda *args, **kwargs: events.append(("child", args[0])) or completed,
             ) as run, mock.patch.object(
                 operations, "validated_entry_dates", return_value={"2026-07-27"}
             ):
@@ -743,14 +755,100 @@ class PluginRegistrationTests(unittest.TestCase):
                     "Generate journal date 2026-07-27.", expected_dates=["2026-07-27"]
                 )
 
+        collect.assert_called_once_with("2026-07-27")
+        self.assertEqual([event[0] for event in events], ["collect", "child"])
         command = run.call_args.args[0]
+        child_environment = run.call_args.kwargs["env"]
         self.assertTrue(result["ok"])
+        self.assertEqual(
+            child_environment["HERMES_HOME"],
+            r"C:\Users\exampleuser\AppData\Local\hermes",
+        )
+        self.assertEqual(
+            child_environment["MY_JOURNAL_ROOT"],
+            r"C:\Users\exampleuser\AppData\Local\hermes\journal",
+        )
         self.assertEqual(command[command.index("-t") + 1], "my-journal-generation")
         self.assertIn("--ignore-rules", command)
         self.assertNotIn("--yolo", command)
         forbidden = {"terminal", "web", "file", "delegate", "messaging", "journal"}
         enabled = set(command[command.index("-t") + 1].split(","))
         self.assertTrue(enabled.isdisjoint(forbidden))
+
+    def test_generation_precollects_before_child_on_linux_too(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        completed = type("Completed", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        journal_date = "2026-07-27"
+        events = []
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ,
+            {"MY_JOURNAL_ROOT": tmp},
+            clear=True,
+        ), mock.patch.object(
+            operations, "_hermes_executable", return_value="/hermes"
+        ), mock.patch.object(
+            operations,
+            "_generation_collect",
+            side_effect=lambda value: events.append(("collect", value)) or {"ok": True},
+        ) as collect, mock.patch.object(
+            operations.subprocess,
+            "run",
+            side_effect=lambda *args, **kwargs: events.append(("child", args[0])) or completed,
+        ), mock.patch.object(
+            operations, "validated_entry_dates", return_value={journal_date}
+        ):
+            result = operations.run_generation(
+                f"Generate journal date {journal_date}.", expected_dates=[journal_date]
+            )
+
+        self.assertTrue(result["ok"])
+        collect.assert_called_once_with(journal_date)
+        self.assertEqual([event[0] for event in events], ["collect", "child"])
+
+    def test_daily_precollection_resolves_yesterday_once_and_freezes_exact_date(self):
+        plugin = load_plugin()
+        operations = sys.modules[f"{plugin.__name__}.operations"]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False
+        ), mock.patch.object(
+            operations, "journal_timezone", return_value="America/Los_Angeles"
+        ), mock.patch.object(
+            operations,
+            "resolve_date_range",
+            return_value=(date(2026, 7, 27), date(2026, 7, 27)),
+        ) as resolve, mock.patch.object(
+            operations,
+            "_generation_collect",
+            return_value={
+                "ok": True,
+                "journal_date": "2026-07-27",
+                "run_id": "a" * 16,
+                "chunk_count": 2,
+            },
+        ) as collect, mock.patch.object(
+            operations,
+            "_create_scheduled_binding",
+            return_value={
+                "binding_id": "b" * 64,
+                "run_id": "a" * 16,
+                "journal_date": "2026-07-27",
+                "receipt_sha256": "1" * 64,
+                "manifest_sha256": "2" * 64,
+                "packet_plan_sha256": "3" * 64,
+            },
+        ):
+            result = operations.precollect_daily_generation()
+
+        resolve.assert_called_once_with(
+            "yesterday", timezone_name="America/Los_Angeles"
+        )
+        collect.assert_called_once_with("2026-07-27")
+        self.assertEqual(result["journal_date"], "2026-07-27")
+        self.assertEqual(result["run_id"], "a" * 16)
+        self.assertEqual(result["chunk_count"], 2)
+        self.assertTrue(result["wakeAgent"])
+        self.assertTrue(result["ok"])
 
     def test_generation_success_requires_no_active_pending_run_for_requested_date(self):
         plugin = load_plugin()
@@ -767,6 +865,8 @@ class PluginRegistrationTests(unittest.TestCase):
             )
             with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False), mock.patch.object(
                 operations, "_hermes_executable", return_value="/hermes"
+            ), mock.patch.object(
+                operations, "_generation_collect", return_value={"ok": True}
             ), mock.patch.object(
                 operations.subprocess, "run", return_value=completed
             ), mock.patch.object(
@@ -942,9 +1042,14 @@ class PluginRegistrationTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         kwargs = create.call_args.kwargs
+        self.assertTrue(kwargs["required_prerun"])
+        self.assertEqual(kwargs["script"], "my-journal-daily/precollect.py")
+        self.assertFalse(kwargs.get("no_agent", False))
         self.assertEqual(kwargs["skills"], ["my-journal"])
-        self.assertEqual(kwargs["enabled_toolsets"], ["my-journal-generation", "no_mcp"])
-        self.assertIn("journal_generation_collect", kwargs["prompt"])
+        self.assertEqual(
+            kwargs["enabled_toolsets"], ["my-journal-generation", "no_mcp"]
+        )
+        self.assertIn("Script Output", kwargs["prompt"])
 
     def test_backfill_invokes_one_bounded_generation_per_missing_date_and_reports_partials(self):
         plugin = load_plugin()
@@ -979,6 +1084,8 @@ class PluginRegistrationTests(unittest.TestCase):
             try:
                 with mock.patch.object(
                     operations, "_hermes_executable", return_value="/hermes"
+                ), mock.patch.object(
+                    operations, "_generation_collect", return_value={"ok": True}
                 ), mock.patch.object(
                     operations.subprocess, "run", return_value=completed
                 ), mock.patch.object(operations, "validated_entry_dates", return_value=set()):
@@ -1555,6 +1662,7 @@ class PluginRegistrationTests(unittest.TestCase):
                 "journal_setup_plan",
                 "journal_setup_approve",
                 "journal_generation_collect",
+                "journal_generation_resume",
                 "journal_generation_get_chunk",
                 "journal_generation_record_digest",
                 "journal_generation_complete",

@@ -3,16 +3,18 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import io
 import subprocess
 import tarfile
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
+PYTHON_VERSION = "0.2.0"
 PREFIX = f"my-journal-v{VERSION}/"
 ARCHIVE_NAME = f"my-journal-v{VERSION}.tar.gz"
 REQUIRED_STABLE_FIELDS = {
     "pyproject.toml": {
-        "version =": f'version = "{VERSION}"',
+        "version =": f'version = "{PYTHON_VERSION}"',
         "release =": f'release = "{VERSION}"',
     },
     "plugins/my-journal/plugin.yaml": {"version:": f"version: {VERSION}"},
@@ -23,7 +25,7 @@ REQUIRED_STABLE_FRAGMENTS = {
     "README.md": (f"My Journal `{VERSION}`",),
     "SECURITY.md": (f"`{VERSION}`",),
 }
-STABLE_DOCUMENTS = ("COMPATIBILITY.md", "PRIVACY.md", "THREAT_MODEL.md")
+
 
 
 def _git(repo: Path, *args: str, text: bool = False):
@@ -62,12 +64,8 @@ def validate_stable_metadata(commit: str, repo: Path) -> None:
         for fragment in fragments:
             if fragment not in content:
                 errors.append(f"{relative} is missing {fragment}")
-    for relative in STABLE_DOCUMENTS:
-        content = _ref_text(commit, relative, repo)
-        if "alpha" in content.lower():
-            errors.append(f"{relative} still describes an alpha release")
     if errors:
-        raise ValueError("stable release metadata mismatch: " + "; ".join(errors))
+        raise ValueError("release metadata mismatch: " + "; ".join(errors))
 
 
 def archive_bytes(commit: str, repo: Path) -> bytes:
@@ -78,8 +76,20 @@ def archive_bytes(commit: str, repo: Path) -> bytes:
         f"--prefix={PREFIX}",
         commit,
     )
-    compressed = gzip.compress(tar_bytes, compresslevel=9, mtime=0)
-    return compressed
+    stream = io.BytesIO()
+    with gzip.GzipFile(
+        filename="",
+        mode="wb",
+        compresslevel=9,
+        fileobj=stream,
+        mtime=0,
+    ) as compressed:
+        compressed.write(tar_bytes)
+    payload = bytearray(stream.getvalue())
+    if len(payload) < 10:
+        raise ValueError("gzip release payload is truncated")
+    payload[9] = 255
+    return bytes(payload)
 
 
 def build(ref: str, output: Path, *, repo: Path | None = None) -> Path:

@@ -387,6 +387,43 @@ class EntryDiscoveryTests(unittest.TestCase):
             self.assertTrue(status["calendar_gaps_truncated"])
             self.assertEqual(status["calendar_gap_count"], 365241)
 
+    def test_default_validation_accepts_relocated_canonical_provenance_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "journal"
+            run_id = "abcdef0123456789"
+            journal_date = "2026-07-20"
+            manifest = root / "evidence" / "2026" / "07" / f"{journal_date}-{run_id}.json"
+            digests = root / "runs" / run_id / "digests"
+            note = root / "notes" / "2026" / "07" / f"{journal_date}.md"
+            manifest.parent.mkdir(parents=True)
+            digests.mkdir(parents=True)
+            note.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps({"ok": True, "journal_date": journal_date}),
+                encoding="utf-8",
+            )
+            (digests / "one.md").write_text("digest marker", encoding="utf-8")
+            old_root = Path("/home/exampleuser/.hermes/journal")
+            note.write_text(
+                f"# My Journal: {journal_date}\n\n"
+                "## Provenance\n\n"
+                f"Run ID: {run_id}\n\n"
+                f"Evidence manifest: {old_root / 'evidence' / '2026' / '07' / f'{journal_date}-{run_id}.json'}\n\n"
+                f"Digest directory: {old_root / 'runs' / run_id / 'digests'}\n",
+                encoding="utf-8",
+            )
+            fake = root / "fake_validator.py"
+            fake.write_text(
+                "def validate_manifest(manifest): return []\n"
+                "def validate_digest_bindings(manifest, digests): return []\n"
+                "def validate_note(manifest, note, **kwargs): return []\n",
+                encoding="utf-8",
+            )
+
+            valid, errors = self.core.validate_entry(note, root=root, validator_path=fake)
+
+            self.assertTrue(valid, errors)
+
     def test_default_validation_rejects_provenance_paths_outside_journal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

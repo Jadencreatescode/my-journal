@@ -27,7 +27,15 @@ from atomic_files import atomic_write_text
 from evidence_identity import canonical_evidence_sha256
 from journal_config import load_config
 from secret_redaction import contains_likely_secret, redact_sensitive, redact_text
-from safe_files import canonical_descriptor_path, descriptor_sqlite_uri, safe_mkdir_tree, safe_open_regular_fd, safe_read_text
+from safe_files import (
+    begin_sqlite_snapshot,
+    canonical_descriptor_path,
+    descriptor_sqlite_uri,
+    safe_mkdir_tree,
+    safe_open_regular_fd,
+    safe_read_text,
+    verify_sqlite_snapshot,
+)
 
 
 HARD_MAX_DATABASES = 128
@@ -245,7 +253,12 @@ def bound_text(
     if len(text) <= limit:
         return text
     omitted = len(text) - limit
-    return f"{text[:limit]}… [TRUNCATED {omitted} chars]"
+    truncated = f"{text[:limit]}… [TRUNCATED {omitted} chars]"
+    return redact_sensitive(
+        truncated,
+        pii_mode=pii_mode,
+        entropy_mode=entropy_mode,
+    ).text
 
 
 def collect_range(
@@ -314,8 +327,10 @@ def collect_range(
         }
         con: sqlite3.Connection | None = None
         database_descriptor: int | None = None
+        snapshot_identity: tuple[int, int, int, int] | None = None
         try:
             database_descriptor = safe_open_regular_fd(home, source.path)
+            snapshot_identity = begin_sqlite_snapshot(home, source.path, database_descriptor)
             database_size = os.fstat(database_descriptor).st_size
             approved_limit = approvals.get(source.profile, DEFAULT_MAX_DATABASE_BYTES)
             if database_size > approved_limit:
@@ -488,6 +503,9 @@ def collect_range(
                     }
                 )
                 retained_message_count += 1
+            verify_sqlite_snapshot(
+                home, source.path, database_descriptor, snapshot_identity
+            )
             sessions.extend(grouped.values())
             db_report["message_count"] = selected_in_database
             db_report["session_count"] = len(grouped)
@@ -733,6 +751,7 @@ def write_run(
     max_packet_chunks: int = HARD_MAX_PACKET_CHUNKS,
 ) -> dict[str, Any]:
     """Collect a range and atomically write its evidence manifest and model packet."""
+    output_dir = canonical_descriptor_path(output_dir)
     reject_symlink_components(output_dir)
     for subtree in ("evidence", "packets", "pending", "runs", "state", "notes"):
         reject_symlink_components(output_dir / subtree)

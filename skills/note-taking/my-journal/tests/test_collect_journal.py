@@ -138,6 +138,25 @@ class DiscoverDatabaseTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     parser.parse_args([flag, "-1"])
 
+    def test_bridge_collection_rejects_nonempty_wal_before_accepting_sessions(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            module.os.environ, {"MY_JOURNAL_IMMUTABLE_DATABASES": "1"}, clear=True
+        ):
+            home = Path(tmp)
+            db = home / "state.db"
+            create_db(db)
+            with db_connection(db) as con:
+                add_session(con, "bridge", "cli", 100.0, "Bridge")
+                add_message(con, 1, "bridge", "user", "Captured", 110.0)
+            (home / "state.db-wal").write_bytes(b"active")
+
+            manifest = module.collect_range(home, 100.0, 200.0)
+
+            self.assertEqual(manifest["coverage"]["database_error_count"], 1)
+            self.assertEqual(manifest["coverage"]["session_count"], 0)
+            self.assertIn("write ahead log", manifest["databases"][0]["error"])
+
     def test_collects_from_path_containing_uri_control_characters(self):
         module = load_module()
         with tempfile.TemporaryDirectory(prefix="journal?") as tmp:
@@ -355,6 +374,30 @@ class CollectionTests(unittest.TestCase):
         self.assertNotIn("secret value with spaces", json_redacted)
         self.assertIn('"safe": true', json_redacted)
         self.assertFalse(module.contains_likely_secret(json_redacted))
+
+    def test_bound_text_reprocesses_redacted_authorization_source_expression(self):
+        module = load_module()
+        raw = (
+            "token=vals.get('GH_TOKEN') or vals.get('GITHUB_TOKEN')\n"
+            "headers={'Authorization': 'Bearer '+token,'User-Agent':'journal'}\n"
+            + ("x" * 200)
+        )
+        first_pass = module.redact_sensitive(
+            raw,
+            pii_mode="preserve",
+            entropy_mode="report",
+        ).text
+        self.assertTrue(module.contains_likely_secret(first_pass))
+
+        bounded = module.bound_text(
+            raw,
+            len(first_pass) - 20,
+            pii_mode="preserve",
+            entropy_mode="report",
+        )
+
+        self.assertIn("[TRUNCATED", bounded)
+        self.assertFalse(module.contains_likely_secret(bounded))
 
     def test_redacts_broad_secret_families_without_leaving_trailing_values(self):
         module = load_module()
@@ -1062,7 +1105,7 @@ class CollectionTests(unittest.TestCase):
             ]
             self.assertEqual(
                 pending_calls,
-                [{"trusted_root": output, "temporary_parent": output}],
+                [{"trusted_root": output.resolve(), "temporary_parent": output.resolve()}],
             )
             packet = packet_path.read_text(encoding="utf-8")
             self.assertIn("First session", packet)
@@ -1070,6 +1113,39 @@ class CollectionTests(unittest.TestCase):
             self.assertIn("First request", packet)
             self.assertIn("Second request", packet)
             self.assertIn(result["run_id"], packet)
+
+    @unittest.skipUnless(sys.platform == "darwin", "standard root alias is macOS specific")
+    def test_write_run_emits_canonical_paths_for_standard_macos_root_alias(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            output = root / "journal"
+            db = home / "state.db"
+            create_db(db)
+            with db_connection(db) as con:
+                add_session(con, "s1", "discord", 100.0, "Synthetic session")
+                add_message(con, 1, "s1", "user", "Synthetic request", 110.0)
+
+            result = module.write_run(
+                home=home,
+                output_dir=output,
+                journal_date="1970-01-01",
+                start_ts=0.0,
+                end_ts=86400.0,
+            )
+
+            canonical = output.resolve()
+            owned = [
+                result["manifest_path"],
+                result["packet_path"],
+                *result["packet_paths"],
+                result["packet_plan_path"],
+                result["pending_path"],
+            ]
+            for value in owned:
+                self.assertTrue(Path(value).is_relative_to(canonical), value)
+                self.assertTrue(str(value).startswith(str(canonical)), value)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ The plugin registers these model tools:
 Read tools use the `journal` toolset. Unattended generation uses a separate `my-journal-generation` toolset containing only:
 
 * `journal_generation_collect`
+* `journal_generation_resume`
 * `journal_generation_get_chunk`
 * `journal_generation_record_digest`
 * `journal_generation_complete`
@@ -50,7 +51,8 @@ hermes journal purge
 hermes journal purge --apply --confirm "DELETE MY JOURNAL DATA"
 ```
 
-`cron-setup` accepts recurring five field cron expressions or explicit interval schedules such as `every 1h`. Bare intervals and one time schedules are rejected before native creation. It writes durable ownership intent before creating the native Hermes job, verifies the complete stored native shape, then reconciles that exact structured job during repeated setup, removal, and purge.
+`cron-setup` accepts recurring five field cron expressions or explicit interval schedules such as `every 1h`.
+The native Windows bridge forwards setup and removal into the WSL ownership transaction. A fixed native worker exposes only create, list, and remove to the Windows Hermes cron API, while WSL retains the durable intent lock until the exact native job is verified and receipted. Bare intervals and one time schedules are rejected before native creation. It writes durable ownership intent before creating a native Hermes agent job with a required pre-run script, verifies the complete stored native shape, then reconciles that exact structured job during repeated setup, removal, and purge. The scheduler executes the trusted precollector before constructing its session database or agent, then runs synthesis through the normal restricted cron route.
 
 The plugin deliberately does not register `/journal`. A plugin slash command bypasses the model. The separately installed `journal` skill owns `/journal`, calls these tools, and produces grounded semantic summaries.
 
@@ -63,7 +65,7 @@ The plugin reads:
 * `MY_JOURNAL_TIMEZONE`, overriding `config.json` in the journal root
 * `config.json` key `timezone`, defaulting to the host local timezone when absent
 
-The standard release declares Linux and macOS support. Native Windows support requires a verified timezone data dependency and is not claimed in version 1.
+The `0.2.0` release declares Linux, macOS, and native Windows Hermes support when Ubuntu WSL provides the restricted Journal runtime. Native Windows operation without Ubuntu WSL is not claimed.
 
 ## Safety contract
 

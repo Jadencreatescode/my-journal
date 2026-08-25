@@ -24,12 +24,15 @@ COMPONENTS = (
     (Path("skills/note-taking/my-journal"), Path("skills/note-taking/my-journal")),
     (Path("skills/note-taking/journal"), Path("skills/note-taking/journal")),
     (Path("plugins/my-journal"), Path("plugins/my-journal")),
+    (Path("scripts/my-journal-daily"), Path("scripts/my-journal-daily")),
 )
 _METADATA = ".my-journal"
 _BACKUPS = "backups"
 _STATE = "install-state.json"
 _TRANSACTION = "install-transaction.json"
 _MAX_JSON_BYTES = 1024 * 1024
+_WSL_RUNTIME_CONFIG = "wsl-runtime.json"
+_MAX_WSL_RUNTIME_CONFIG_BYTES = 4096
 _ALLOWED_DESTINATIONS = frozenset(target.as_posix() for _, target in COMPONENTS)
 _STAGE_RE = re.compile(r"^\.my-journal-(?:stage|restore|uninstall)-[A-Za-z0-9_-]+$")
 
@@ -44,6 +47,83 @@ def _home(hermes_home: Path) -> Path:
     if not home.is_dir() or home.is_symlink():
         raise ValueError(f"Hermes home does not exist or is unsafe: {home}")
     return home
+
+
+def _effective_journal_root(home: Path) -> Path:
+    config = home / _METADATA / _WSL_RUNTIME_CONFIG
+    try:
+        config_metadata = config.lstat()
+    except FileNotFoundError:
+        return home / "journal"
+    if config.is_symlink() or not config.is_file() or config_metadata.st_size > _MAX_WSL_RUNTIME_CONFIG_BYTES:
+        raise ValueError("unsafe My Journal WSL runtime configuration")
+    try:
+        value = json.loads(config.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("malformed My Journal WSL runtime configuration") from exc
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema_version", "wsl_hermes_home"}
+        or value.get("schema_version") != 1
+        or not isinstance(value.get("wsl_hermes_home"), str)
+    ):
+        raise ValueError("malformed My Journal WSL runtime configuration")
+    raw_home = value["wsl_hermes_home"]
+    wsl_home = Path(raw_home)
+    if (
+        not wsl_home.is_absolute()
+        or "\x00" in raw_home
+        or any(part in (".", "..") for part in wsl_home.parts)
+        or wsl_home.as_posix() != raw_home.rstrip("/")
+        or raw_home == "/"
+    ):
+        raise ValueError("malformed My Journal WSL runtime configuration")
+    return wsl_home / "journal"
+
+
+def _assert_no_receipt_bound_cron(home: Path) -> None:
+    journal_root = _effective_journal_root(home)
+    intent = journal_root / "cron-job-intent.json"
+    try:
+        intent_metadata = intent.lstat()
+    except FileNotFoundError:
+        intent_metadata = None
+    if intent_metadata is not None:
+        if intent.is_symlink() or not intent.is_file():
+            raise ValueError("unsafe Journal cron ownership intent; run hermes journal cron-remove")
+        if intent_metadata.st_size > _MAX_JSON_BYTES:
+            raise ValueError("Journal cron ownership intent is oversized; run hermes journal cron-remove")
+        try:
+            intent_value = json.loads(intent.read_bytes())
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("malformed Journal cron ownership intent; run hermes journal cron-remove") from exc
+        if not isinstance(intent_value, dict):
+            raise ValueError("malformed Journal cron ownership intent; run hermes journal cron-remove")
+        raise ValueError(
+            "My Journal has durable cron ownership intent; run hermes journal cron-remove before restore or uninstall"
+        )
+
+    receipt = journal_root / "cron-job.json"
+    try:
+        receipt_metadata = receipt.lstat()
+    except FileNotFoundError:
+        return
+    if receipt.is_symlink() or not receipt.is_file():
+        raise ValueError("unsafe Journal cron ownership receipt; run hermes journal cron-remove")
+    if receipt_metadata.st_size > _MAX_JSON_BYTES:
+        raise ValueError("Journal cron ownership receipt is oversized; run hermes journal cron-remove")
+    data = receipt.read_bytes()
+    if len(data) > _MAX_JSON_BYTES:
+        raise ValueError("Journal cron ownership receipt is oversized; run hermes journal cron-remove")
+    try:
+        value = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("malformed Journal cron ownership receipt; run hermes journal cron-remove") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("job_id"), str) or not value["job_id"]:
+        raise ValueError("malformed Journal cron ownership receipt; run hermes journal cron-remove")
+    raise ValueError(
+        "My Journal still owns an active cron job; run hermes journal cron-remove before restore or uninstall"
+    )
 
 
 def _relative(value: object, *, label: str) -> Path:
@@ -680,6 +760,8 @@ def install(package_root: Path, hermes_home: Path, upgrade: bool) -> list[str]:
         if missing:
             raise ValueError("package is incomplete: " + ", ".join(missing))
         existing = [destination for _, destination in destinations if _exists(destination)]
+        if upgrade and existing:
+            _assert_no_receipt_bound_cron(home)
         if existing and not upgrade:
             displayed_existing = [
                 str(locked_home.display / destination.relative_to(home))
@@ -753,6 +835,7 @@ def recover(hermes_home: Path) -> list[str]:
 def restore(hermes_home: Path, *, force: bool = False) -> list[str]:
     with _lifecycle_lock(hermes_home) as locked_home:
         home = locked_home.anchor
+        _assert_no_receipt_bound_cron(home)
         state = _read_json(home, _STATE, missing_message="no restorable My Journal installation state")
         components = _validated_state(state, home)
         for item in components:
@@ -796,6 +879,7 @@ def restore(hermes_home: Path, *, force: bool = False) -> list[str]:
 def uninstall(hermes_home: Path, *, force: bool = False) -> list[str]:
     with _lifecycle_lock(hermes_home) as locked_home:
         home = locked_home.anchor
+        _assert_no_receipt_bound_cron(home)
         state = _read_json(home, _STATE, missing_message="My Journal installation state was not found")
         components = _validated_state(state, home)
         for item in components:

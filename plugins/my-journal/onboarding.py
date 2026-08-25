@@ -319,6 +319,9 @@ def discover_setup_inventory(*, home: Path, journal_root: Path | None = None) ->
         approvals = {}
     for profile, path in sources:
         descriptor = _safe_files.safe_open_regular_fd(trusted_home, path)
+        snapshot_identity = _safe_files.begin_sqlite_snapshot(
+            trusted_home, path, descriptor
+        )
         try:
             metadata = os.fstat(descriptor)
             profiles.append(profile)
@@ -370,6 +373,9 @@ def discover_setup_inventory(*, home: Path, journal_root: Path | None = None) ->
                     platforms.add(str(source))
             finally:
                 con.close()
+            _safe_files.verify_sqlite_snapshot(
+                trusted_home, path, descriptor, snapshot_identity
+            )
             ready_profiles.append(profile)
         finally:
             os.close(descriptor)
@@ -419,9 +425,13 @@ def discover_activity_metadata(
     date_counts: Counter[str] = Counter()
     session_ids: set[tuple[str, str]] = set()
     fingerprint = hashlib.sha256()
-    sources = _sources(Path(home).expanduser().absolute(), selected_profiles)
+    trusted_home = Path(home).expanduser().absolute()
+    sources = _sources(trusted_home, selected_profiles)
     for profile, path in sources:
-        descriptor = _safe_files.safe_open_regular_fd(Path(home).expanduser().absolute(), path)
+        descriptor = _safe_files.safe_open_regular_fd(trusted_home, path)
+        snapshot_identity = _safe_files.begin_sqlite_snapshot(
+            trusted_home, path, descriptor
+        )
         try:
             stat_result = os.fstat(descriptor)
             approved_limit = approvals.get(profile, DEFAULT_MAX_DATABASE_BYTES)
@@ -489,6 +499,9 @@ def discover_activity_metadata(
                         raise ValueError("eligible history exceeds session compiled ceiling")
             finally:
                 con.close()
+            _safe_files.verify_sqlite_snapshot(
+                trusted_home, path, descriptor, snapshot_identity
+            )
         finally:
             os.close(descriptor)
     dates = sorted(date_counts)
@@ -1124,7 +1137,7 @@ def _planned_config(plan: dict[str, Any]) -> dict[str, Any]:
 
 def approve_guided_setup(
     *, journal_root: Path, plan_id: str, confirmation: str,
-    generation_fn=None,
+    generation_fn=None, collection_fn=None,
 ) -> dict[str, Any]:
     root = Path(journal_root).expanduser().absolute()
     root_descriptor = _safe_files._open_directory(root)
@@ -1190,6 +1203,9 @@ def approve_guided_setup(
         if generation_fn is None:
             from .operations import run_generation
             generation_fn = run_generation
+            if collection_fn is None:
+                from .tools import _generation_collect
+                collection_fn = _generation_collect
         first = date.fromisoformat(plan["start_date"])
         last = date.fromisoformat(plan["end_date"])
         activity_dates = set(plan["activity_dates"])
@@ -1202,14 +1218,27 @@ def approve_guided_setup(
             )
         failed_dates: list[str] = []
         results: list[dict[str, Any]] = []
-        for journal_date in sorted(activity_dates - completed_dates):
-            try:
-                result = generation_fn(
-                    f"Generate approved guided setup journal date {journal_date}.",
-                    expected_dates=[journal_date],
-                )
-            except Exception as exc:
-                result = {"ok": False, "error": str(exc)}
+        outstanding_dates = sorted(activity_dates - completed_dates)
+        collection_failures: dict[str, dict[str, Any]] = {}
+        if collection_fn is not None:
+            for journal_date in outstanding_dates:
+                try:
+                    collected = collection_fn(journal_date)
+                except Exception as exc:
+                    collected = {"ok": False, "error": str(exc)}
+                if not collected.get("ok"):
+                    collection_failures[journal_date] = collected
+        for journal_date in outstanding_dates:
+            if journal_date in collection_failures:
+                result = collection_failures[journal_date]
+            else:
+                try:
+                    result = generation_fn(
+                        f"Generate approved guided setup journal date {journal_date}.",
+                        expected_dates=[journal_date],
+                    )
+                except Exception as exc:
+                    result = {"ok": False, "error": str(exc)}
             results.append({"journal_date": journal_date, **result})
             if result.get("ok"):
                 completed_dates.add(journal_date)

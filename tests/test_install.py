@@ -23,6 +23,15 @@ def load_installer():
 
 
 class InstallerSecurityTests(unittest.TestCase):
+    def test_daily_runner_is_a_transactional_installed_component(self):
+        installer = load_installer()
+
+        self.assertIn(
+            (Path("scripts/my-journal-daily"), Path("scripts/my-journal-daily")),
+            installer.COMPONENTS,
+        )
+        self.assertTrue((ROOT / "scripts" / "my-journal-daily" / "precollect.py").is_file())
+
     def test_descriptor_path_canonicalizes_only_root_alias(self):
         installer = load_installer()
 

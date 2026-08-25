@@ -2,11 +2,11 @@
 
 ## Supported version
 
-Version `0.1.0` receives security fixes.
+Versions `0.1.0` and `0.2.0` receive security fixes.
 
 ## Reporting
 
-Report suspected vulnerabilities privately to the repository owner before opening a public issue. Include affected version, operating system, reproduction steps, and whether private journal data may have been exposed. Do not include real credentials, session databases, or private journal content.
+Report suspected vulnerabilities through [GitHub private vulnerability reporting](https://github.com/Jadencreatescode/my-journal/security/advisories/new) before opening a public issue. Include affected version, operating system, reproduction steps, and whether private journal data may have been exposed. Do not include real credentials, session databases, or private journal content.
 
 The maintainer will acknowledge a complete report when practical, investigate impact, and coordinate disclosure after a fix or documented mitigation exists.
 

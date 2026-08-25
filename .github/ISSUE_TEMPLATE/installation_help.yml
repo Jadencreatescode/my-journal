@@ -1,0 +1,44 @@
+name: Installation help
+description: Ask for help installing, upgrading, restoring, or removing My Journal
+title: "[Install help]: "
+labels: ["installation", "help wanted"]
+body:
+  - type: input
+    id: journal_version
+    attributes:
+      label: My Journal version or release asset
+    validations:
+      required: true
+  - type: input
+    id: hermes_version
+    attributes:
+      label: Hermes Agent version
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Linux, macOS, Native Windows with Ubuntu WSL helper, Ubuntu under WSL, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or step that failed
+      description: Remove private paths and credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Privacy safe result
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I removed secrets, tokens, passwords, personal information, chat identifiers, and private conversation content.
+          required: true

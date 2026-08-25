@@ -19,6 +19,51 @@ def load_module():
 
 
 class SafeFileTests(unittest.TestCase):
+    def test_descriptor_sqlite_uri_adds_immutable_only_for_explicit_bridge_mode(self):
+        module = load_module()
+        with mock.patch.object(module.os.path, "isdir", return_value=True), mock.patch.dict(
+            module.os.environ, {}, clear=True
+        ):
+            self.assertEqual(module.descriptor_sqlite_uri(7), "file:/proc/self/fd/7?mode=ro")
+        with mock.patch.object(module.os.path, "isdir", return_value=True), mock.patch.dict(
+            module.os.environ, {"MY_JOURNAL_IMMUTABLE_DATABASES": "1"}, clear=True
+        ):
+            self.assertEqual(
+                module.descriptor_sqlite_uri(7),
+                "file:/proc/self/fd/7?mode=ro&immutable=1",
+            )
+        with mock.patch.object(module.os.path, "isdir", return_value=True), mock.patch.dict(
+            module.os.environ, {"MY_JOURNAL_IMMUTABLE_DATABASES": "true"}, clear=True
+        ):
+            with self.assertRaisesRegex(ValueError, "must equal 1"):
+                module.descriptor_sqlite_uri(7)
+
+    def test_immutable_snapshot_guard_rejects_wal_or_database_mutation(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            module.os.environ, {"MY_JOURNAL_IMMUTABLE_DATABASES": "1"}, clear=True
+        ):
+            root = Path(tmp)
+            database = root / "state.db"
+            database.write_bytes(b"database")
+            descriptor = module.safe_open_regular_fd(root, database)
+            try:
+                token = module.begin_sqlite_snapshot(root, database, descriptor)
+                module.verify_sqlite_snapshot(root, database, descriptor, token)
+
+                wal = root / "state.db-wal"
+                wal.write_bytes(b"active")
+                with self.assertRaisesRegex(ValueError, "write ahead log"):
+                    module.begin_sqlite_snapshot(root, database, descriptor)
+                wal.unlink()
+
+                token = module.begin_sqlite_snapshot(root, database, descriptor)
+                database.write_bytes(b"changed database")
+                with self.assertRaisesRegex(ValueError, "changed during collection"):
+                    module.verify_sqlite_snapshot(root, database, descriptor, token)
+            finally:
+                os.close(descriptor)
+
     def test_descriptor_path_canonicalizes_standard_macos_root_alias(self):
         module = load_module()
 
@@ -62,6 +107,53 @@ class SafeFileTests(unittest.TestCase):
 
             self.assertTrue(swapped)
             self.assertTrue((moved / "evidence" / "2026" / "07").is_dir())
+            self.assertEqual(list(external.iterdir()), [])
+
+    def test_open_or_create_directory_rejects_linked_missing_segment_without_external_write(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            external = base / "external"
+            external.mkdir()
+            real_mkdir = os.mkdir
+
+            def linked_mkdir(path, mode=0o777, *, dir_fd=None):
+                if path == "owned" and dir_fd is not None:
+                    (base / "owned").symlink_to(external, target_is_directory=True)
+                    return None
+                return real_mkdir(path, mode, dir_fd=dir_fd)
+
+            with mock.patch.object(module.os, "mkdir", side_effect=linked_mkdir):
+                with self.assertRaises((OSError, ValueError)):
+                    module.open_or_create_directory_fd(base / "owned" / "journal")
+            self.assertEqual(list(external.iterdir()), [])
+
+    def test_exclusive_create_remains_anchored_when_parent_is_replaced(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "journal"
+            parent = root / "scheduled-bindings"
+            parent.mkdir(parents=True)
+            moved = root / "scheduled-bindings-original"
+            external = base / "external"
+            external.mkdir()
+            target = parent / "claim.json"
+            real_open = os.open
+            swapped = False
+
+            def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+                nonlocal swapped
+                if path == "claim.json" and dir_fd is not None and not swapped:
+                    swapped = True
+                    parent.rename(moved)
+                    parent.symlink_to(external, target_is_directory=True)
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            with mock.patch.object(module.os, "open", side_effect=racing_open):
+                module.safe_create_text_exclusive(root, target, "claim")
+            self.assertTrue(swapped)
+            self.assertEqual((moved / "claim.json").read_text(encoding="utf-8"), "claim")
             self.assertEqual(list(external.iterdir()), [])
 
     def test_unlink_removes_owned_regular_file_but_rejects_symlink(self):
