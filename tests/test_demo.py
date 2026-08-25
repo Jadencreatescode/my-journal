@@ -44,7 +44,7 @@ class SyntheticDemoTests(unittest.TestCase):
             note_path = destination.resolve() / "journal" / "2026" / "08" / "2026-08-24.md"
             manifest_path = destination / "evidence" / "synthetic-conversations.json"
             receipt_path = destination / "receipts" / "validation.json"
-            self.assertEqual(result.note_path, note_path)
+            self.assertTrue(result.note_path.samefile(note_path))
             self.assertTrue(note_path.is_file())
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(receipt_path.is_file())

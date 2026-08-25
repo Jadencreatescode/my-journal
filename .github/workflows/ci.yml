@@ -59,6 +59,9 @@ jobs:
         shell: pwsh
         run: |
           $distro = "Ubuntu-24.04"
-          $workspace = (& wsl.exe -d $distro -- wslpath -a "$env:GITHUB_WORKSPACE").Trim()
+          $workspaceWindows = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $drive = $workspaceWindows.Substring(0, 1).ToLowerInvariant()
+          $relative = $workspaceWindows.Substring(3).Replace('\', '/')
+          $workspace = "/mnt/$drive/$relative"
           & wsl.exe -d $distro -- bash -lc "set -euo pipefail; cd '$workspace'; python3 scripts/check_release_tree.py; python3 scripts/check_public_content.py; python3 scripts/compile_all.py; python3 -m unittest discover -s tests -v; python3 -m unittest discover -s plugins/my-journal/tests -v; python3 -m unittest discover -s skills/note-taking/my-journal/tests -v; python3 scripts/demo.py --ephemeral"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
