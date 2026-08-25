@@ -120,9 +120,7 @@ class ReleaseToolTests(unittest.TestCase):
                 "path: docs",
             ),
             ".github/workflows/release.yml": (
-                "default: v0.2.0",
-                'test "$RELEASE_REF" = "v0.2.0"',
-                "ref: ${{ inputs.ref }}",
+                "ref: a869b5244a2e9c89bf24350225d34feaf3450a79",
                 "python3 scripts/check_release_tree.py --root .",
                 "python3 scripts/check_public_content.py --root .",
                 "python3 scripts/compile_all.py",
@@ -150,6 +148,29 @@ class ReleaseToolTests(unittest.TestCase):
                 self.assertIn(fragment, content, f"{relative} is missing {fragment}")
         release_workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertNotIn("dist/*", release_workflow)
+
+    def test_release_workflow_uses_immutable_inputs_and_pinned_actions(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertNotIn("${{ inputs.ref }}", workflow)
+        self.assertNotIn("inputs:", workflow)
+        self.assertIn("ref: a869b5244a2e9c89bf24350225d34feaf3450a79", workflow)
+        action_lines = []
+        workflow_paths = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+        workflow_paths += sorted((ROOT / ".github" / "workflows").glob("*.yaml"))
+        for workflow_path in workflow_paths:
+            action_lines.extend(
+                (workflow_path.name, line.strip())
+                for line in workflow_path.read_text(encoding="utf-8").splitlines()
+                if line.strip().startswith(("- uses:", "uses:"))
+                and "uses: ./" not in line.strip()
+            )
+        self.assertGreaterEqual(len(action_lines), 2)
+        for workflow_name, line in action_lines:
+            self.assertRegex(
+                line,
+                r"@[0-9a-f]{40}(?:\s|$)",
+                f"{workflow_name} has an action that is not pinned: {line}",
+            )
 
     def test_verifier_requires_guided_setup_runtime_and_tests(self):
         verifier = load_script("verify_release")

@@ -1,36 +1,25 @@
 name: Release verification
 on:
   workflow_dispatch:
-    inputs:
-      ref:
-        required: true
-        default: v0.2.0
-        type: choice
-        options:
-          - v0.2.0
 permissions:
   contents: read
 jobs:
   archive:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          ref: ${{ inputs.ref }}
-      - name: Validate exact release ref
-        env:
-          RELEASE_REF: ${{ inputs.ref }}
-        run: test "$RELEASE_REF" = "v0.2.0"
+          ref: a869b5244a2e9c89bf24350225d34feaf3450a79
       - run: python3 scripts/check_release_tree.py --root .
       - run: python3 scripts/check_public_content.py --root .
       - run: python3 scripts/compile_all.py
       - run: python3 -m unittest discover -s plugins/my-journal/tests
       - run: python3 -m unittest discover -s skills/note-taking/my-journal/tests
       - run: python3 -m unittest discover -s tests
-      - run: python3 scripts/build_release.py --ref "${{ inputs.ref }}" --output dist
-      - run: python3 scripts/verify_release.py --ref "${{ inputs.ref }}" --archive dist/my-journal-v0.2.0.tar.gz
-      - uses: actions/upload-artifact@v4
+      - run: python3 scripts/build_release.py --ref a869b5244a2e9c89bf24350225d34feaf3450a79 --output dist
+      - run: python3 scripts/verify_release.py --ref a869b5244a2e9c89bf24350225d34feaf3450a79 --archive dist/my-journal-v0.2.0.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: my-journal-v0.2.0
           path: |
