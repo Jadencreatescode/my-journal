@@ -71,6 +71,11 @@ def _open_or_create_directory(path: Path, mode: int) -> int:
         raise
 
 
+def open_or_create_directory_fd(path: Path, mode: int = 0o700) -> int:
+    """Create missing segments through held parents and return the final descriptor."""
+    return _open_or_create_directory(path, mode)
+
+
 def _relative_path(root: Path, target: Path) -> tuple[Path, tuple[str, ...]]:
     root_input = root.expanduser().absolute()
     target_input = target.expanduser().absolute()
@@ -161,10 +166,63 @@ def safe_open_regular_fd(root: Path, target: Path) -> int:
 
 def descriptor_sqlite_uri(descriptor: int) -> str:
     """Return a read only SQLite URI for a held descriptor on Linux or macOS."""
+    immutable = os.environ.get("MY_JOURNAL_IMMUTABLE_DATABASES", "")
+    if immutable not in {"", "1"}:
+        raise ValueError("MY_JOURNAL_IMMUTABLE_DATABASES must equal 1 when set")
+    suffix = "&immutable=1" if immutable == "1" else ""
     for base in ("/proc/self/fd", "/dev/fd"):
         if os.path.isdir(base):
-            return f"file:{base}/{descriptor}?mode=ro"
+            return f"file:{base}/{descriptor}?mode=ro{suffix}"
     raise RuntimeError("descriptor based SQLite access is unavailable on this platform")
+
+
+def _assert_empty_sqlite_wal(root: Path, target: Path) -> None:
+    parent_descriptor: int | None = None
+    wal_descriptor: int | None = None
+    try:
+        wal = target.with_name(target.name + "-wal")
+        parent_descriptor, name = _open_parent(root, wal)
+        try:
+            wal_descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent_descriptor)
+        except FileNotFoundError:
+            return
+        metadata = os.fstat(wal_descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != 0:
+            raise ValueError("SQLite write ahead log must be empty for immutable collection")
+    finally:
+        if wal_descriptor is not None:
+            os.close(wal_descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+
+
+def _snapshot_identity(descriptor: int) -> tuple[int, int, int, int]:
+    metadata = os.fstat(descriptor)
+    return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
+
+
+def begin_sqlite_snapshot(
+    root: Path, target: Path, descriptor: int
+) -> tuple[int, int, int, int] | None:
+    """Capture an immutable bridge database identity after proving its WAL is empty."""
+    if os.environ.get("MY_JOURNAL_IMMUTABLE_DATABASES", "") != "1":
+        return None
+    _assert_empty_sqlite_wal(root, target)
+    return _snapshot_identity(descriptor)
+
+
+def verify_sqlite_snapshot(
+    root: Path,
+    target: Path,
+    descriptor: int,
+    token: tuple[int, int, int, int] | None,
+) -> None:
+    """Reject bridge reads if the database or its WAL changed during collection."""
+    if token is None:
+        return
+    _assert_empty_sqlite_wal(root, target)
+    if _snapshot_identity(descriptor) != token:
+        raise ValueError("SQLite database changed during collection")
 
 
 def safe_read_text(root: Path, target: Path, *, max_bytes: int) -> str:
@@ -223,6 +281,41 @@ def safe_unlink(root: Path, target: Path, *, missing_ok: bool = False) -> None:
         os.unlink(name, dir_fd=parent_descriptor)
         os.fsync(parent_descriptor)
     finally:
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+
+
+def safe_create_text_exclusive(root: Path, target: Path, text: str) -> None:
+    """Create one new UTF8 file through its held parent without following links."""
+    parent_descriptor: int | None = None
+    file_descriptor: int | None = None
+    try:
+        parent_descriptor, name = _open_parent(root, target)
+        file_descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        data = text.encode("utf-8")
+        written = 0
+        while written < len(data):
+            count = os.write(file_descriptor, data[written:])
+            if count <= 0:
+                raise OSError("short exclusive write")
+            written += count
+        os.fsync(file_descriptor)
+        os.close(file_descriptor)
+        file_descriptor = None
+        os.fsync(parent_descriptor)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError("target must not be a symlink") from exc
+        raise
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
         if parent_descriptor is not None:
             os.close(parent_descriptor)
 

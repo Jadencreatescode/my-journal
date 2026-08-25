@@ -19,14 +19,14 @@
 ## Controls
 
 1. Descriptor anchored reads, directory creation, writes, renames, and removals with symlink refusal.
-2. Read only SQLite access through an anchored file descriptor, with a compiled database size ceiling and bounded SQL extraction before redaction.
+2. Read only SQLite access through an anchored file descriptor, with a compiled database size ceiling and bounded SQL extraction before redaction. The Windows bridge additionally requires immutable SQLite mode, an empty write ahead log before and after each read, and an unchanged held database identity, size, and modification time.
 3. Compiled discovery, raw field, collection, and output ceilings that callers cannot raise.
 4. Mandatory secret redaction and declared privacy policy validation.
 5. Deterministic chunk identities and resumable digest receipts.
 6. Exact coverage validation before completion state is committed.
 7. Transaction records and rollback for installation lifecycle operations.
 8. Deterministic release archives built from a Git reference.
-9. Unattended generation receives only four dedicated journal generation tools. It has no terminal, web, general file, delegation, messaging, MCP, or unrelated plugin tools.
+9. Unattended generation receives only five dedicated journal generation tools. It has no terminal, web, general file, delegation, messaging, MCP, or unrelated plugin tools.
 10. Packet text is structurally labeled untrusted data. Canonical note and completion state replacement roll back together if validator publication fails. The durable completion chain then binds and rechecks the receipt, archive, state, evidence manifest, and canonical note before success.
 11. Cron ownership intent is durably written before native job creation. Exact structured reconciliation, directory descriptor locking, and descriptor anchored purge prevent orphaned or misidentified automation.
 
@@ -36,4 +36,4 @@
 2. Compromise of the selected model provider or Hermes itself.
 3. Recovery of deleted or unavailable session history.
 4. Proof that regex and entropy redaction catches every possible secret.
-5. Native Windows support. Ubuntu under WSL is covered by the Linux support path.
+5. Native Windows operation without the restricted Ubuntu WSL runtime.

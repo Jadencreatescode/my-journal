@@ -554,9 +554,11 @@ def validate_note(
         raw_profiles = []
     platforms = ", ".join(sorted(str(value) for value in raw_platforms))
     profiles = ", ".join(sorted(str(value) for value in raw_profiles))
-    if not _has_exact_line(note, f"Platforms: {platforms}"):
+    platform_lines = [f"Platforms: {platforms}"] if platforms else ["Platforms:", "Platforms: (none)"]
+    profile_lines = [f"Profiles: {profiles}"] if profiles else ["Profiles:", "Profiles: (none)"]
+    if not any(_has_exact_line(note, value) for value in platform_lines):
         errors.append("provenance does not contain exact platforms")
-    if not _has_exact_line(note, f"Profiles: {profiles}"):
+    if not any(_has_exact_line(note, value) for value in profile_lines):
         errors.append("provenance does not contain exact profiles")
     if manifest_path is not None and not _has_exact_line(note, f"Evidence manifest: {manifest_path}"):
         errors.append("provenance does not contain the evidence manifest path")

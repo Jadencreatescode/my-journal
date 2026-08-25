@@ -3,8 +3,11 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  test:
+  posix:
     strategy:
       fail-fast: false
       matrix:
@@ -16,8 +19,49 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python3 scripts/check_release_tree.py
-      - run: python3 scripts/compile_all.py
-      - run: python3 -m unittest discover -s tests -v
-      - run: python3 -m unittest discover -s plugins/my-journal/tests -v
-      - run: python3 -m unittest discover -s skills/note-taking/my-journal/tests -v
+      - run: python scripts/check_release_tree.py
+      - run: python scripts/check_public_content.py
+      - run: python scripts/compile_all.py
+      - run: python -m unittest discover -s tests -v
+      - run: python -m unittest discover -s plugins/my-journal/tests -v
+      - run: python -m unittest discover -s skills/note-taking/my-journal/tests -v
+
+  windows-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python scripts/check_release_tree.py
+      - run: python scripts/check_public_content.py
+      - run: python scripts/compile_all.py
+      - run: python -m unittest tests.test_demo tests.test_daily_runner tests.test_descriptor_exec tests.test_public_content tests.test_release tests.test_skill_scheduling_contract -v
+      - run: python -m unittest discover -s plugins/my-journal/tests -p "test_windows_bridge.py" -v
+      - run: python -m unittest discover -s plugins/my-journal/tests -p "test_windows_cron_worker.py" -v
+      - run: python -m unittest discover -s plugins/my-journal/tests -p "test_windows_exclusive_move.py" -v
+      - run: python scripts/demo.py --ephemeral
+
+  windows-wsl-integration:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ubuntu WSL
+        uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+      - name: Run complete suites inside Ubuntu WSL
+        shell: pwsh
+        run: |
+          $distro = "Ubuntu-24.04"
+          $workspaceWindows = [System.IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $drive = $workspaceWindows.Substring(0, 1).ToLowerInvariant()
+          $relative = $workspaceWindows.Substring(3).Replace('\', '/')
+          $workspace = "/mnt/$drive/$relative"
+          & wsl.exe -d $distro -- bash -lc "set -euo pipefail; cd '$workspace'; python3 scripts/check_release_tree.py; python3 scripts/check_public_content.py; python3 scripts/compile_all.py; python3 -m unittest discover -s tests -v; python3 -m unittest discover -s plugins/my-journal/tests -v; python3 -m unittest discover -s skills/note-taking/my-journal/tests -v; python3 scripts/demo.py --ephemeral"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

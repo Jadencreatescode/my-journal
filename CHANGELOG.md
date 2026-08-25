@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.2.0
+
+Promotes the hardened Windows and scheduler line to the second stable release.
+
+1. Supports native Windows Hermes while Ubuntu WSL remains the restricted Journal filesystem and collection helper.
+2. Requires trusted precollection before scheduled agent construction, trusted postvalidation after generation, and a locked execution contract.
+3. Preserves frozen evidence and resumable digest receipts across interrupted long backfills.
+4. Adds a completely synthetic demonstration that reads no user conversations, configuration, credentials, model, or network service.
+5. Adds clearer product documentation, a static project site, privacy safe community templates, and contributor guidance.
+6. Retains transactional installation, rollback, fail closed validation, descriptor anchored storage, and portable canonical Markdown.
+7. Uses a descriptor inherited child launcher for macOS generation without weakening root identity checks.
+8. Makes the synthetic demonstration fresh destination only and rejects linked, replaced, or reparse point output roots.
+9. Adds content level privacy scanning, strict package inventory, explicit release asset upload paths, and cross interpreter deterministic gzip output.
+10. Stores the native Windows to WSL binding through a descriptor anchored WSL helper and exposes install recovery through the PowerShell wrapper.
+
+## 0.2.0 alpha 5
+
+Repairs conservative privacy redaction retries for failed Windows backfills.
+
+1. Reprocess bounded tool call text after truncation so authorization expressions cannot survive a partial first redaction pass.
+2. Add an exact date and run ID pending reset that permanently quarantines failed evidence while refusing canonical entries, completed state, unowned paths, and active generation.
+3. Preserve all previously validated dates while allowing only failed pending evidence to be recollected.
+4. Add a required pre-run collection phase so immutable evidence is frozen before Hermes constructs the scheduled agent or its session database.
+5. Preserve normal cron model, provider, session, and delivery protections while keeping synthesis restricted to five Journal generation tools, including exact frozen run resume.
+
+## 0.2.0 alpha 4
+
+Repairs the Windows bridge ceiling for approved long running backfills.
+
+1. Keep ordinary Windows to WSL Journal calls bounded to six minutes.
+2. Give only `journal_setup_approve` a fixed twelve hour ceiling.
+3. Preserve the fixed argument vector, strict UTF 8 decoding, and bounded JSON protocol.
+
+## 0.2.0 alpha 3
+
+Repairs multi date immutable backfill orchestration.
+
+1. Freeze every outstanding approved date before launching the first synthesis child.
+2. Preserve date specific collection failures without exposing later dates to a live database.
+3. Keep partial retry behavior and oldest first synthesis after the collection phase.
+
+## 0.2.0 alpha 2
+
+Repairs guided Windows generation after owner approval.
+
+1. Freeze each immutable daily evidence packet before launching the Hermes synthesis child, so the child resumes stable evidence instead of colliding with its own live session database write.
+2. Decode restricted WSL bridge output as strict UTF 8 on Windows, independent of the machine legacy code page.
+3. Add focused ordering and transport encoding regression tests.
+
+### Included
+
+1. A platform neutral native Windows plugin registration path that never imports Linux only locking modules.
+2. A bounded JSON bridge with fixed operation allowlists, fixed argument vectors, local drive path validation, and no shell execution.
+3. Native Hermes 19 tool registration while Journal filesystem operations remain descriptor anchored inside WSL.
+4. Immutable descriptor SQLite access for Windows mounted databases with empty write ahead log checks and before versus after database identity verification.
+5. Native Windows Hermes child generation using the Windows Hermes home and Journal root, without launching the obsolete WSL Hermes agent.
+
 ## 0.1.0
 
 Promotes the reconciled alpha line to the first stable release. Stable 0.1.0 keeps the strict alpha 5 filesystem and receipt contract while restoring the alpha 3 completion, recovery, and scheduling guarantees.

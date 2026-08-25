@@ -342,6 +342,20 @@ class GuidedFirstUseTests(unittest.TestCase):
             self.assertEqual(absolute["reason"], "absolute_database_limit_exceeded")
             self.assertNotIn("confirmation_phrase", absolute)
 
+    def test_bridge_inventory_rejects_nonempty_write_ahead_log(self):
+        plugin = load_plugin()
+        onboarding = sys.modules[f"{plugin.__name__}.onboarding"]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            onboarding.os.environ, {"MY_JOURNAL_IMMUTABLE_DATABASES": "1"}, clear=True
+        ):
+            home = Path(tmp) / "home"
+            database = home / "state.db"
+            create_db(database)
+            (home / "state.db-wal").write_bytes(b"active")
+
+            with self.assertRaisesRegex(ValueError, "write ahead log"):
+                onboarding.discover_setup_inventory(home=home)
+
     def test_setup_inventory_lists_profile_and_platform_metadata_without_message_bodies(self):
         plugin = load_plugin()
         onboarding = sys.modules[f"{plugin.__name__}.onboarding"]
@@ -898,9 +912,15 @@ class GuidedFirstUseTests(unittest.TestCase):
                 timezone_name="UTC",
             )
             generated = []
+            events = []
+
+            def collection(journal_date):
+                events.append(("collect", journal_date))
+                return {"ok": True}
 
             def generation(request, *, expected_dates):
                 generated.extend(expected_dates)
+                events.append(("generate", expected_dates[0]))
                 return {"ok": expected_dates != ["2026-07-26"]}
 
             result = onboarding.approve_guided_setup(
@@ -908,9 +928,21 @@ class GuidedFirstUseTests(unittest.TestCase):
                 plan_id=plan["plan_id"],
                 confirmation=plan["confirmation_phrase"],
                 generation_fn=generation,
+                collection_fn=collection,
             )
 
             self.assertFalse(result["ok"])
+            self.assertEqual(
+                events,
+                [
+                    ("collect", "2026-07-25"),
+                    ("collect", "2026-07-26"),
+                    ("collect", "2026-07-27"),
+                    ("generate", "2026-07-25"),
+                    ("generate", "2026-07-26"),
+                    ("generate", "2026-07-27"),
+                ],
+            )
             self.assertEqual(generated, ["2026-07-25", "2026-07-26", "2026-07-27"])
             self.assertEqual(result["completed_dates"], ["2026-07-25", "2026-07-27"])
             self.assertEqual(result["failed_dates"], ["2026-07-26"])

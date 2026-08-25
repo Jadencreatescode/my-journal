@@ -4,24 +4,67 @@ import argparse
 import hashlib
 import importlib.util
 import tarfile
+import tempfile
 from pathlib import Path
 
 FORBIDDEN_NAMES = {".env", "credentials.json", "config.local.json"}
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".pyc", ".zip"}
 RUNTIME_ROOTS = {"journal", "evidence", "runs", "pending", "backups"}
+FORBIDDEN_TOP_LEVEL = {".venv", "venv", "dist", "build", "__pycache__"}
 MAX_MEMBERS = 5000
 MAX_MEMBER_BYTES = 20_000_000
 MAX_TOTAL_BYTES = 100_000_000
 REQUIRED_RELEASE_FILES = {
+    ".github/workflows/pages.yml",
     "README.md",
     "LICENSE",
     "install.py",
+    "install-windows.ps1",
+    "scripts/build_release.py",
+    "scripts/check_public_content.py",
+    "scripts/check_release_tree.py",
+    "scripts/compile_all.py",
+    "scripts/demo.py",
+    "scripts/my-journal-daily/precollect.py",
+    "scripts/my-journal-daily/postvalidate.py",
+    "scripts/verify_release.py",
+    "tests/test_demo.py",
+    "tests/test_public_content.py",
+    "docs/index.html",
+    "docs/assets/my-journal-social-preview.png",
     "plugins/my-journal/plugin.yaml",
     "plugins/my-journal/__init__.py",
+    "plugins/my-journal/cli.py",
+    "plugins/my-journal/core.py",
+    "plugins/my-journal/descriptor_exec.py",
     "plugins/my-journal/onboarding.py",
+    "plugins/my-journal/operations.py",
+    "plugins/my-journal/schemas.py",
+    "plugins/my-journal/tools.py",
+    "plugins/my-journal/windows_bridge.py",
+    "plugins/my-journal/windows_cron_worker.py",
+    "plugins/my-journal/windows_exclusive_move.py",
+    "plugins/my-journal/wsl_config_store.py",
+    "plugins/my-journal/wsl_runtime.py",
     "plugins/my-journal/tests/test_onboarding.py",
     "plugins/my-journal/tests/test_runtime_hardening.py",
+    "plugins/my-journal/tests/test_windows_bridge.py",
+    "plugins/my-journal/tests/test_windows_cron_worker.py",
+    "plugins/my-journal/tests/test_windows_exclusive_move.py",
+    "plugins/my-journal/tests/test_wsl_config_store.py",
+    "plugins/my-journal/tests/test_wsl_runtime.py",
     "skills/note-taking/my-journal/SKILL.md",
+    "skills/note-taking/my-journal/scripts/atomic_files.py",
+    "skills/note-taking/my-journal/scripts/chunk_digests.py",
+    "skills/note-taking/my-journal/scripts/collect_journal.py",
+    "skills/note-taking/my-journal/scripts/evidence_identity.py",
+    "skills/note-taking/my-journal/scripts/journal_config.py",
+    "skills/note-taking/my-journal/scripts/safe_files.py",
+    "skills/note-taking/my-journal/scripts/secret_redaction.py",
+    "skills/note-taking/my-journal/scripts/validate_journal.py",
+    "skills/note-taking/my-journal/templates/config.json",
+    "skills/note-taking/my-journal/templates/cron-prompt.md",
+    "skills/note-taking/my-journal/templates/daily-entry.md",
     "skills/note-taking/journal/SKILL.md",
 }
 
@@ -36,6 +79,17 @@ def _builder_module():
     return module
 
 
+def _public_content_module():
+    path = Path(__file__).resolve().with_name("check_public_content.py")
+    spec = importlib.util.spec_from_file_location("my_journal_public_content_check", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("public content checker could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+
 def verify(ref: str, archive: Path, *, repo: Path | None = None) -> dict:
     repository = (repo or Path.cwd()).expanduser().absolute()
     archive = archive.expanduser().absolute()
@@ -48,6 +102,7 @@ def verify(ref: str, archive: Path, *, repo: Path | None = None) -> dict:
         raise ValueError("archive is not the exact deterministic build of the requested commit")
 
     total_bytes = 0
+    public_files: list[tuple[Path, bytes]] = []
     with tarfile.open(archive, "r:gz") as opened:
         members = opened.getmembers()
         if not members or len(members) > MAX_MEMBERS:
@@ -73,6 +128,8 @@ def verify(ref: str, archive: Path, *, repo: Path | None = None) -> dict:
             relative = Path(relative_name)
             if relative.parts and relative.parts[0] in RUNTIME_ROOTS:
                 raise ValueError(f"archive contains runtime data: {member.name}")
+            if relative.parts and relative.parts[0] in FORBIDDEN_TOP_LEVEL:
+                raise ValueError(f"archive contains build or environment data: {member.name}")
             if member.issym() or member.islnk():
                 raise ValueError(f"archive contains a link: {member.name}")
             if member.isdev() or member.isfifo():
@@ -86,6 +143,22 @@ def verify(ref: str, archive: Path, *, repo: Path | None = None) -> dict:
             total_bytes += member.size
             if total_bytes > MAX_TOTAL_BYTES:
                 raise ValueError("archive expanded size is oversized")
+            if member.isfile():
+                handle = opened.extractfile(member)
+                if handle is None:
+                    raise ValueError(f"archive file could not be read: {member.name}")
+                payload = handle.read(MAX_MEMBER_BYTES + 1)
+                if len(payload) != member.size:
+                    raise ValueError(f"archive file size changed while reading: {member.name}")
+                public_files.append((relative, payload))
+
+    with tempfile.TemporaryDirectory(prefix="my-journal-public-check-") as temporary:
+        public_root = Path(temporary)
+        for relative, payload in public_files:
+            destination = public_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+        _public_content_module().check_public_content(public_root)
 
     sidecars = {
         "SHA256SUMS": f"{hashlib.sha256(actual).hexdigest()}  {archive.name}\n",

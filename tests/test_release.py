@@ -35,63 +35,121 @@ def create_repo(root: Path) -> str:
     git(root, "config", "user.email", "release-tests@example.invalid")
     git(root, "config", "user.name", "Release Tests")
     required_files = {
-        "README.md": "My Journal `0.1.0` release fixture\n",
+        "README.md": "My Journal `0.2.0` release fixture\n",
         "LICENSE": "MIT\n",
         "install.py": "print('fixture')\n",
-        "pyproject.toml": "version = \"0.1.0\"\nrelease = \"0.1.0\"\n",
-        "SECURITY.md": "Version `0.1.0` receives security fixes.\n",
-        "COMPATIBILITY.md": "Stable 0.1.0 compatibility contract.\n",
+        "install-windows.ps1": "Write-Output 'fixture'\n",
+        "scripts/demo.py": "print('synthetic demo fixture')\n",
+        "scripts/check_public_content.py": "print('public content fixture')\n",
+        "tests/test_demo.py": "# synthetic demo tests\n",
+        "tests/test_public_content.py": "# public content tests\n",
+        "docs/index.html": "<!doctype html><title>My Journal</title>\n",
+        "docs/assets/my-journal-social-preview.png": (
+            ROOT / "docs/assets/my-journal-social-preview.png"
+        ).read_bytes(),
+        "pyproject.toml": "version = \"0.2.0\"\nrelease = \"0.2.0\"\n",
+        "SECURITY.md": "Version `0.2.0` receives security fixes.\n",
+        "COMPATIBILITY.md": "Windows WSL bridge candidate contract.\n",
         "PRIVACY.md": "The stable release uses nonreversible references.\n",
-        "THREAT_MODEL.md": "Native Windows support is outside scope.\n",
-        "plugins/my-journal/plugin.yaml": "version: 0.1.0\n",
+        "THREAT_MODEL.md": "Windows operation requires the restricted WSL runtime.\n",
+        "plugins/my-journal/plugin.yaml": "version: 0.2.0\n",
         "plugins/my-journal/__init__.py": "VALUE = 1\n",
         "plugins/my-journal/onboarding.py": "VALUE = 1\n",
+        "plugins/my-journal/descriptor_exec.py": "print('descriptor fixture')\n",
+        "plugins/my-journal/schemas.py": "VALUE = 1\n",
+        "plugins/my-journal/windows_bridge.py": "VALUE = 1\n",
+        "plugins/my-journal/wsl_runtime.py": "VALUE = 1\n",
         "plugins/my-journal/tests/test_onboarding.py": "# onboarding tests\n",
         "plugins/my-journal/tests/test_runtime_hardening.py": "# runtime tests\n",
-        "skills/note-taking/my-journal/SKILL.md": "version: 0.1.0\n# Evidence skill\n",
-        "skills/note-taking/journal/SKILL.md": "version: 0.1.0\n# Journal skill\n",
+        "plugins/my-journal/tests/test_windows_bridge.py": "# bridge tests\n",
+        "plugins/my-journal/tests/test_wsl_runtime.py": "# runtime tests\n",
+        "skills/note-taking/my-journal/SKILL.md": "version: 0.2.0\n# Evidence skill\n",
+        "skills/note-taking/journal/SKILL.md": "version: 0.2.0\n# Journal skill\n",
     }
+    for relative in load_script("verify_release").REQUIRED_RELEASE_FILES:
+        if relative not in required_files:
+            required_files[relative] = "{}\n" if Path(relative).suffix == ".json" else "# fixture\n"
     for relative, content in required_files.items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content, encoding="utf-8")
     git(root, "add", ".")
     git(root, "commit", "-q", "-m", "fixture")
     return git(root, "rev-parse", "HEAD")
 
 
 class ReleaseToolTests(unittest.TestCase):
-    def test_stable_version_metadata_and_wsl_support_are_synchronized(self):
+    def test_windows_installer_is_a_fixed_wrapper_around_transactional_installer(self):
+        content = (ROOT / "install-windows.ps1").read_text(encoding="utf-8")
+        self.assertIn("[System.IO.Path]::GetFullPath($WindowsPath)", content)
+        self.assertIn("[System.IO.Path]::GetPathRoot($fullPath)", content)
+        self.assertIn("/mnt/$drive/$relativePath", content)
+        self.assertIn("local Windows drive", content)
+        self.assertIn('"--hermes-home", $WslHome', content)
+        self.assertIn('"$WslSource/install.py"', content)
+        self.assertIn("$Arguments += \"--upgrade\"", content)
+        self.assertIn("$Arguments += \"--recover\"", content)
+        self.assertNotIn("Invoke-Expression", content)
+        self.assertNotIn("cmd.exe", content)
+
+    def test_candidate_version_metadata_and_windows_bridge_support_are_synchronized(self):
         builder = load_script("build_release")
-        self.assertEqual(builder.VERSION, "0.1.0")
+        self.assertEqual(builder.VERSION, "0.2.0")
         expected = {
-            "pyproject.toml": ("version = \"0.1.0\"", "release = \"0.1.0\""),
-            "plugins/my-journal/plugin.yaml": ("version: 0.1.0",),
-            "skills/note-taking/journal/SKILL.md": ("version: 0.1.0",),
-            "skills/note-taking/my-journal/SKILL.md": ("version: 0.1.0",),
+            "pyproject.toml": ("version = \"0.2.0\"", "release = \"0.2.0\""),
+            "plugins/my-journal/plugin.yaml": ("version: 0.2.0", "  - windows"),
+            "skills/note-taking/journal/SKILL.md": ("version: 0.2.0",),
+            "skills/note-taking/my-journal/SKILL.md": ("version: 0.2.0", "platforms: [linux, macos, windows]"),
+            ".github/workflows/ci.yml": (
+                "windows-native",
+                "windows-wsl-integration",
+                "ubuntu-latest",
+                "macos-latest",
+                "windows-latest",
+                "Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364",
+                "distribution: Ubuntu-24.04",
+                "python: [\"3.11\", \"3.12\", \"3.13\"]",
+            ),
+            ".github/workflows/pages.yml": (
+                "actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d",
+                "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9",
+                "actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128",
+                "path: docs",
+            ),
             ".github/workflows/release.yml": (
-                "default: v0.1.0",
-                'test "$RELEASE_REF" = "v0.1.0"',
+                "default: v0.2.0",
+                'test "$RELEASE_REF" = "v0.2.0"',
                 "ref: ${{ inputs.ref }}",
                 "python3 scripts/check_release_tree.py --root .",
+                "python3 scripts/check_public_content.py --root .",
                 "python3 scripts/compile_all.py",
                 "python3 -m unittest discover -s plugins/my-journal/tests",
                 "python3 -m unittest discover -s skills/note-taking/my-journal/tests",
                 "python3 -m unittest discover -s tests",
-                "my-journal-v0.1.0.tar.gz",
+                "my-journal-v0.2.0.tar.gz",
+                "dist/SHA256SUMS",
+                "dist/my-journal-v0.2.0.tar.gz.inventory.txt",
+                "dist/my-journal-v0.2.0.tar.gz.commit.txt",
             ),
             "README.md": (
-                "My Journal `0.1.0`",
-                "Ubuntu under WSL is supported as a Linux environment",
-                "--ref v0.1.0",
+                "My Journal `0.2.0`",
+                "native Windows Hermes",
+                ".\\install-windows.ps1",
+                "-Recover",
+                "--ref v0.2.0",
             ),
-            "COMPATIBILITY.md": ("Ubuntu under WSL is supported as a Linux environment",),
-            "SECURITY.md": ("`0.1.0`",),
+            "COMPATIBILITY.md": ("Native Windows Hermes with Ubuntu WSL",),
+            "SECURITY.md": ("`0.2.0`",),
         }
         for relative, fragments in expected.items():
             content = (ROOT / relative).read_text(encoding="utf-8")
             for fragment in fragments:
                 self.assertIn(fragment, content, f"{relative} is missing {fragment}")
+        release_workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertNotIn("dist/*", release_workflow)
 
     def test_verifier_requires_guided_setup_runtime_and_tests(self):
         verifier = load_script("verify_release")
@@ -154,13 +212,14 @@ class ReleaseToolTests(unittest.TestCase):
             second = builder.build(commit, base / "two", repo=repo)
 
             self.assertEqual(first.read_bytes(), second.read_bytes())
+            self.assertEqual(first.read_bytes()[:10], bytes.fromhex("1f8b08000000000002ff"))
             result = verifier.verify(commit, first, repo=repo)
             self.assertEqual(result["commit"], commit)
             self.assertEqual(len(result["sha256"]), 64)
             with tarfile.open(first, "r:gz") as opened:
                 names = [member.name for member in opened.getmembers()]
             self.assertEqual(names, sorted(names))
-            root_name = "my-journal-v0.1.0"
+            root_name = "my-journal-v0.2.0"
             self.assertTrue(
                 all(name == root_name or name.startswith(root_name + "/") for name in names)
             )
@@ -217,7 +276,7 @@ class ReleaseToolTests(unittest.TestCase):
             git(repo, "commit", "-q", "-m", "alpha metadata")
             alpha_commit = git(repo, "rev-parse", "HEAD")
 
-            with self.assertRaisesRegex(ValueError, "stable release metadata"):
+            with self.assertRaisesRegex(ValueError, "release metadata"):
                 builder.build(alpha_commit, base / "dist", repo=repo)
 
     def test_builder_rejects_alpha_plugin_line_when_other_metadata_is_stable(self):
@@ -304,6 +363,45 @@ class ReleaseToolTests(unittest.TestCase):
                 f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n",
             )
             self.assertTrue(result["sidecars_verified"])
+
+    def test_tracked_dist_content_is_rejected_by_tree_and_archive_verifier(self):
+        builder = load_script("build_release")
+        verifier = load_script("verify_release")
+        checker = load_script("check_release_tree")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            repo.mkdir()
+            create_repo(repo)
+            private = repo / "dist" / "journal" / "private-note.md"
+            private.parent.mkdir(parents=True, exist_ok=True)
+            private.write_text("private runtime fixture\n", encoding="utf-8")
+            git(repo, "add", ".")
+            git(repo, "commit", "-q", "-m", "polluted dist fixture")
+            commit = git(repo, "rev-parse", "HEAD")
+            with self.assertRaisesRegex(ValueError, "build or environment"):
+                checker.check_tree(repo)
+            archive = builder.build(commit, base / "dist-output", repo=repo)
+            with self.assertRaisesRegex(ValueError, "build or environment"):
+                verifier.verify(commit, archive, repo=repo)
+
+    def test_verifier_rejects_private_content_in_exact_commit(self):
+        builder = load_script("build_release")
+        verifier = load_script("verify_release")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            repo = base / "repo"
+            repo.mkdir()
+            create_repo(repo)
+            private = repo / "docs" / "private.md"
+            private.parent.mkdir(parents=True, exist_ok=True)
+            private.write_text("credential ghp_abcdefghijklmnopqrstuvwxyz123456\n", encoding="utf-8")
+            git(repo, "add", ".")
+            git(repo, "commit", "-q", "-m", "private fixture")
+            commit = git(repo, "rev-parse", "HEAD")
+            archive = builder.build(commit, base / "dist", repo=repo)
+            with self.assertRaisesRegex(ValueError, "GitHub token"):
+                verifier.verify(commit, archive, repo=repo)
 
     def test_release_tree_allows_skill_named_journal_but_rejects_runtime_data(self):
         checker = load_script("check_release_tree")

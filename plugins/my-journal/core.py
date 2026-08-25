@@ -339,6 +339,21 @@ def _inside(path: Path, parent: Path) -> bool:
         return False
 
 
+def _relocated_provenance_path(
+    declared: Path,
+    *,
+    current_root: Path,
+    expected_tail: tuple[str, ...],
+) -> Path | None:
+    """Resolve one relocated canonical path without reading its old location."""
+    if _inside(declared, current_root):
+        return declared
+    if not declared.is_absolute() or tuple(declared.parts[-len(expected_tail):]) != expected_tail:
+        return None
+    candidate = current_root.joinpath(*expected_tail)
+    return candidate if _inside(candidate, current_root) else None
+
+
 def _load_validator_module(path: Path) -> types.ModuleType:
     """Compile one anchored validator source snapshot with trusted import context."""
     source = _safe_files.safe_read_text(path.parent, path, max_bytes=1_000_000)
@@ -380,18 +395,53 @@ def validate_entry(
         errors.append("missing unique Digest directory provenance line")
     if errors:
         return False, errors
-    manifest_path = Path(manifest_value).expanduser()
-    digest_dir = Path(digest_value).expanduser()
+    assert manifest_value is not None
+    assert digest_value is not None
+    declared_manifest_path = Path(manifest_value).expanduser()
+    declared_digest_dir = Path(digest_value).expanduser()
     evidence_root = journal_root / "evidence"
     if evidence_root.is_symlink() or not _inside(evidence_root, journal_root):
         errors.append("journal evidence root is unsafe")
-    if not _inside(manifest_path, evidence_root):
-        errors.append("evidence manifest is outside journal evidence directory")
     runs_root = journal_root / "runs"
     if runs_root.is_symlink() or not _inside(runs_root, journal_root):
         errors.append("journal runs root is unsafe")
-    if not _inside(digest_dir, runs_root):
-        errors.append("digest directory is outside journal runs directory")
+
+    manifest_path = declared_manifest_path
+    digest_dir = declared_digest_dir
+    if not _inside(declared_manifest_path, evidence_root):
+        run_id = _line_value(text, "Run ID")
+        year, month, _ = path.stem.split("-")
+        expected_manifest_tail = (
+            "evidence",
+            year,
+            month,
+            f"{path.stem}-{run_id}.json",
+        ) if run_id and _RUN_ID.fullmatch(run_id) is not None else ()
+        relocated = _relocated_provenance_path(
+            declared_manifest_path,
+            current_root=journal_root,
+            expected_tail=expected_manifest_tail,
+        ) if expected_manifest_tail else None
+        if relocated is None:
+            errors.append("evidence manifest is outside journal evidence directory")
+        else:
+            manifest_path = relocated
+    if not _inside(declared_digest_dir, runs_root):
+        run_id = _line_value(text, "Run ID")
+        expected_digest_tail = (
+            "runs",
+            run_id,
+            "digests",
+        ) if run_id and _RUN_ID.fullmatch(run_id) is not None else ()
+        relocated = _relocated_provenance_path(
+            declared_digest_dir,
+            current_root=journal_root,
+            expected_tail=expected_digest_tail,
+        ) if expected_digest_tail else None
+        if relocated is None:
+            errors.append("digest directory is outside journal runs directory")
+        else:
+            digest_dir = relocated
     if errors:
         return False, errors
 
@@ -446,8 +496,8 @@ def validate_entry(
                 manifest,
                 text,
                 session_evidence="\n".join(digest_texts),
-                manifest_path=manifest_path,
-                digest_dir=digest_dir,
+                manifest_path=declared_manifest_path,
+                digest_dir=declared_digest_dir,
             )
         )
         return not validation_errors, [str(error) for error in validation_errors]

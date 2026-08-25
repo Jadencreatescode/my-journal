@@ -12,11 +12,15 @@ Private runtime data can include evidence manifests, packet chunks, digest recei
 
 Evidence chunks and digests used for generation can be sent to the model provider configured in Hermes. Users should review their provider terms and data settings before enabling collection.
 
-Unattended generation runs with the dedicated `my-journal-generation` toolset. That toolset can collect one configured date, retrieve bounded immutable chunks, record bound digest receipts, and publish only through full validation. It does not expose general Hermes tools.
+Unattended generation first runs a trusted required pre-run script before Hermes constructs its agent or session database. The script freezes the configured date or aborts the tick. Hermes then runs normal scheduled synthesis with the dedicated `my-journal-generation` toolset. That toolset can resume the frozen date, retrieve bounded immutable chunks, record bound digest receipts, and publish only through full validation. It does not expose general Hermes tools.
 
 ## Public provenance policy
 
 The stable release uses nonreversible coverage references. Raw session identifiers, chat identifiers, thread identifiers, and absolute database paths are not published in evidence artifacts. No reversible private identifier map is created.
+
+The synthetic demonstration uses embedded synthetic conversations only. It does not read Hermes configuration, sessions, credentials, a model, or a network service, and it never overwrites an existing destination.
+
+Release verification rejects runtime data roots, build and environment roots, unapproved binaries, textual PNG metadata, high confidence credential formats, private infrastructure paths, and nonexample identity fixtures before public artifacts are accepted.
 
 ## Redaction limits
 

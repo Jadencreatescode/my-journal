@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="My Journal turns approved Hermes conversations into validated daily Markdown.">
+  <title>My Journal for Hermes</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="nav" aria-label="Primary navigation">
+    <a class="brand" href="./">My Journal</a>
+    <nav>
+      <a href="https://github.com/Jadencreatescode/my-journal">GitHub</a>
+      <a href="https://github.com/Jadencreatescode/my-journal/discussions">Discussions</a>
+      <a href="https://github.com/Jadencreatescode/my-journal/releases">Releases</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <p class="eyebrow">For Hermes Agent</p>
+      <h1>See how the work actually moved forward.</h1>
+      <p class="lead">My Journal turns conversations you explicitly approve into validated daily Markdown. It records decisions, changes, verification, blockers, corrections, and open work without turning the whole journal into agent memory.</p>
+      <div class="actions">
+        <a class="primary" href="https://github.com/Jadencreatescode/my-journal/releases">Download the verified release</a>
+        <a class="secondary" href="https://github.com/Jadencreatescode/my-journal#try-it-without-private-data">Try the synthetic demo</a>
+      </div>
+      <p class="fine">No analytics. No trackers. The synthetic demo reads no user conversations, configuration, credentials, model, or network service.</p>
+    </section>
+
+    <section aria-labelledby="difference">
+      <p class="eyebrow">The difference</p>
+      <h2 id="difference">Progression history, not another chat dump.</h2>
+      <div class="grid three">
+        <article>
+          <h3>Raw chat history</h3>
+          <p>Shows what was said, mixed with repetition, abandoned routes, and tool noise.</p>
+        </article>
+        <article>
+          <h3>Agent memory</h3>
+          <p>Keeps compact durable facts useful in future conversations.</p>
+        </article>
+        <article class="accent">
+          <h3>My Journal</h3>
+          <p>Shows what changed over time, what passed verification, and what remains unfinished.</p>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="record">
+      <p class="eyebrow">One readable record</p>
+      <h2 id="record">Built for projects that last longer than one conversation.</h2>
+      <div class="grid four">
+        <article><span>01</span><h3>Decisions</h3><p>The direction chosen and why it changed.</p></article>
+        <article><span>02</span><h3>Changes</h3><p>The implementation, documents, or operations that moved.</p></article>
+        <article><span>03</span><h3>Verification</h3><p>The evidence that supports a completed claim.</p></article>
+        <article><span>04</span><h3>Open work</h3><p>The blockers and next threads still worth attention.</p></article>
+      </div>
+    </section>
+
+    <section class="privacy" aria-labelledby="privacy">
+      <div>
+        <p class="eyebrow">Privacy boundary</p>
+        <h2 id="privacy">You choose the scope before collection.</h2>
+      </div>
+      <ul>
+        <li>Collection is disabled until explicitly enabled.</li>
+        <li>Profiles and platforms use explicit allowlists.</li>
+        <li>Credentials are redacted and common personal information can be masked.</li>
+        <li>Generation uses a restricted Journal toolset.</li>
+        <li>Canonical entries remain portable Markdown that you own.</li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="start">
+      <p class="eyebrow">Start safely</p>
+      <h2 id="start">Experience the result before approving private data.</h2>
+      <pre><code>python3 scripts/demo.py --ephemeral</code></pre>
+      <p>The demonstration uses embedded synthetic conversations, prints one representative entry, and removes its temporary files before exiting.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>My Journal for Hermes, created by Jaden Gibson. MIT licensed.</p>
+    <p><a href="https://github.com/Jadencreatescode/my-journal/blob/main/PRIVACY.md">Privacy</a> · <a href="https://github.com/Jadencreatescode/my-journal/blob/main/SECURITY.md">Security</a> · <a href="https://github.com/Jadencreatescode/my-journal/blob/main/CONTRIBUTING.md">Contributing</a></p>
+  </footer>
+</body>
+</html>

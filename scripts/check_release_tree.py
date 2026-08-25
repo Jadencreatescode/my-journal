@@ -6,7 +6,8 @@ from pathlib import Path
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".zip", ".pyc"}
 FORBIDDEN_NAMES = {".env", "config.local.json", "credentials.json"}
 RUNTIME_ROOTS = {"journal", "evidence", "runs", "pending", "backups"}
-IGNORED_ROOTS = {".git", ".venv", "venv", "dist", "build", "__pycache__"}
+IGNORED_ROOTS = {".git"}
+FORBIDDEN_TOP_LEVEL = {".venv", "venv", "dist", "build", "__pycache__"}
 
 
 def check_tree(root: Path) -> int:
@@ -16,6 +17,9 @@ def check_tree(root: Path) -> int:
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
         if not relative.parts or relative.parts[0] in IGNORED_ROOTS:
+            continue
+        if relative.parts[0] in FORBIDDEN_TOP_LEVEL:
+            violations.append(f"build or environment data path: {relative.as_posix()}")
             continue
         if relative.parts[0] in RUNTIME_ROOTS:
             violations.append(f"runtime data path: {relative.as_posix()}")

@@ -2,24 +2,48 @@
 
 **See how your work actually moved forward.**
 
-My Journal turns the Hermes conversations you approve into an evidence backed daily record of decisions, changes, failed attempts, verification, blockers, and open work. It gives long projects a readable timeline without turning the whole journal into agent memory.
+My Journal `0.2.0` turns Hermes conversations you explicitly approve into a validated daily record of decisions, changes, failed attempts, verification, blockers, corrections, and open work. Canonical entries are portable Markdown you can read in Obsidian, search, sync, back up, or move.
 
-[![Watch the My Journal functionality overview](docs/assets/my-journal-functionality-demo.png)](https://github.com/Jadencreatescode/my-journal/releases/download/v0.1.0/my-journal-functionality-overview.mp4)
+It is a progression journal, not another memory system and not a raw transcript export.
 
-**Watch the 63 second functionality overview.** Every product capture uses synthetic data. The current video previews functionality in the active development build. The latest packaged public release remains `0.1.0`.
+[![My Journal for Hermes social preview](docs/assets/my-journal-social-preview.png)](https://jadencreatescode.github.io/my-journal/)
+
+The preview and every public example use synthetic data.
+
+## Why it is different
+
+| Raw chat history | Agent memory | My Journal |
+| --- | --- | --- |
+| Shows what was said, including repetition and tool noise | Keeps compact durable facts useful in future conversations | Shows what changed over time, what passed verification, and what remains unfinished |
 
 ## What it gives you
 
 1. **Daily progression, not another chat dump.** Each note separates what was discussed, decided, attempted, completed, verified, blocked, and corrected.
 2. **Scope you choose first.** Profiles, platforms, dates, timezone, privacy settings, exclusions, and workload limits are explicit before generation.
 3. **Evidence backed notes.** Read only collection creates bounded evidence, masks personal information, redacts likely secrets, and preserves nonreversible coverage references.
-4. **Historical backfill that can continue.** Approved activity dates run oldest first, and interrupted evidence can resume instead of being recollected.
-5. **Validated daily automation.** A restricted Journal writer cannot mark a date complete until the note and evidence reconcile.
-6. **Portable ownership.** Canonical entries are plain Markdown that you can read in Obsidian, search, sync, back up, or move.
+4. **Historical backfill that can continue.** Approved activity dates run oldest first, and interrupted evidence resumes from frozen evidence instead of being recollected.
+5. **Validated daily automation.** Required precollection freezes evidence before the scheduled agent starts. Required postvalidation and a locked execution contract prevent partial work from being reported as complete.
+6. **Portable ownership.** Canonical entries remain plain Markdown under your Hermes data root.
+
+## Try it without private data
+
+The synthetic demonstration does not read Hermes conversations, configuration, credentials, a model provider, or a network service.
+
+Print a temporary example and remove it automatically:
+
+```text
+python3 scripts/demo.py --ephemeral
+```
+
+Or create a browsable synthetic Journal tree:
+
+```text
+python3 scripts/demo.py --output ./my-journal-demo
+```
 
 ## Release status
 
-The stable public release is `0.1.0` for Linux and macOS. Ubuntu under WSL is supported as a Linux environment. Native Windows support and the hardened locked scheduling route are part of the upcoming `0.2.0` alpha line and remain a development preview until the matching source archive and cross platform release checks are published.
+Version `0.2.0` supports Linux, macOS, Ubuntu under WSL, and native Windows Hermes when Ubuntu WSL provides the restricted Journal helper. On Windows, the native Hermes installation remains the conversational owner. WSL performs only the restricted Journal filesystem and collection work.
 
 Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` before enabling collection.
 
@@ -27,19 +51,19 @@ Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` before enabling collec
 
 1. `skills/note-taking/my-journal` owns collection, evidence, privacy controls, digest receipts, validation, and note templates.
 2. `skills/note-taking/journal` owns conversational journal requests.
-3. `plugins/my-journal` owns 11 deterministic journal tools, four restricted generation tools, and `hermes journal`.
+3. `plugins/my-journal` owns 11 deterministic journal tools, five restricted generation tools, and `hermes journal`.
 4. `install.py` owns transactional installation, restore, uninstall, and interrupted activation recovery.
 
 Markdown under `journal/notes/YYYY/MM/YYYY-MM-DD.md` is canonical. Semantic stores are optional mirrors.
 
 ## Requirements
 
-1. Linux or macOS.
+1. Linux, macOS, or native Windows Hermes with Ubuntu WSL available for the restricted Journal runtime.
 2. Python 3.11, 3.12, or 3.13.
 3. A Hermes Agent installation with skills, standalone plugins, native cron management, and noninteractive chat.
 4. An IANA timezone available through Python `zoneinfo`.
 
-Ubuntu under WSL is supported as a Linux environment. Native Windows support is not claimed.
+On native Windows, Hermes owns the plugin, skills, tools, and model interaction. Ubuntu WSL performs only the restricted Journal runtime. It does not run a second conversational Hermes agent. The obsolete WSL Hermes installation is not required by the bridge.
 
 ## Install
 
@@ -47,6 +71,30 @@ Run the installer with the Hermes home used by the target agent:
 
 ```text
 python3 install.py --hermes-home /path/to/hermes/home
+```
+
+On native Windows, run the PowerShell wrapper from the extracted release. It keeps native Hermes as the conversational owner and runs the transactional installer inside Ubuntu WSL:
+
+```powershell
+.\install-windows.ps1 -HermesHome "$env:LOCALAPPDATA\hermes" -Distro Ubuntu
+```
+
+Use the same wrapper for lifecycle operations:
+
+```powershell
+.\install-windows.ps1 -HermesHome "$env:LOCALAPPDATA\hermes" -Distro Ubuntu -Upgrade
+```
+
+```powershell
+.\install-windows.ps1 -HermesHome "$env:LOCALAPPDATA\hermes" -Distro Ubuntu -Restore
+```
+
+```powershell
+.\install-windows.ps1 -HermesHome "$env:LOCALAPPDATA\hermes" -Distro Ubuntu -Recover
+```
+
+```powershell
+.\install-windows.ps1 -HermesHome "$env:LOCALAPPDATA\hermes" -Distro Ubuntu -Uninstall
 ```
 
 Enable the plugin:
@@ -166,19 +214,28 @@ hermes journal maintenance
 hermes journal setup-inventory
 ```
 
-Generation commands use Hermes with the dedicated `my-journal-generation` toolset. It exposes only four bounded journal operations and excludes terminal, web, general file, delegation, messaging, MCP, and unrelated plugin tools. Generation verifies that validated canonical notes exist before reporting success:
+Generation commands use Hermes with the dedicated `my-journal-generation` toolset. It exposes only five bounded journal operations and excludes terminal, web, general file, delegation, messaging, MCP, and unrelated plugin tools. Generation verifies that validated canonical notes exist before reporting success:
 
 ```text
 hermes journal generate 2026-07-27
 hermes journal backfill "last 30 days"
 ```
 
-Daily scheduling uses Hermes native cron. Setup accepts five field cron expressions or explicit intervals such as `every 1h`. It persists durable exact ownership intent before creation, verifies the complete structured native job after creation, reuses an exact existing owned job, and removes only jobs matching that intent:
+Daily scheduling uses a Hermes native agent cron job with a required pre-run script.
+On native Windows, the same command keeps durable ownership and locking inside WSL while a fixed native Python worker performs only create, list, and remove against the Windows Hermes cron API. The WSL lock remains held across native creation and receipt commit, so an interrupted setup resumes from the durable intent instead of duplicating or orphaning the job. Hermes executes the trusted precollector before constructing the agent or its session database. A collection failure aborts the tick before any agent starts. After evidence is frozen, the normal cron agent remains pinned to the `my-journal-generation` toolset and the `my-journal` skill, so all normal scheduler model, provider, session, and delivery protections remain active. Setup accepts five field cron expressions or explicit intervals such as `every 1h`. It persists durable exact ownership intent before creation, verifies the complete structured native job after creation, reuses an exact existing owned job, and removes only jobs matching that intent:
 
 ```text
 hermes journal cron-setup --schedule "0 11 * * *" --deliver local
 hermes journal cron-remove
 ```
+
+When native Windows Hermes should operate an existing canonical WSL home instead of the Windows mounted home, bind it explicitly during setup. The normalized path is persisted under the native Hermes home and reused by every later Journal command and scheduled tool call.
+
+```text
+hermes journal cron-setup --schedule "0 11 * * *" --deliver local --wsl-hermes-home /home/exampleuser/.hermes
+```
+
+On native Windows, the equivalent native Hermes agent job uses `my-journal-daily/precollect.py` with `required_prerun` enabled. The script invokes the restricted Ubuntu WSL Journal runtime and freezes the previous configured local date before native Hermes constructs the scheduled synthesis agent.
 
 Purge previews owned journal data without writing:
 
@@ -248,8 +305,8 @@ python3 -m unittest discover -s skills/note-taking/my-journal/tests -v
 The deterministic release archive is built only from a Git reference:
 
 ```text
-python3 scripts/build_release.py --ref v0.1.0 --output dist
-python3 scripts/verify_release.py --ref v0.1.0 --archive dist/my-journal-v0.1.0.tar.gz
+python3 scripts/build_release.py --ref v0.2.0 --output dist
+python3 scripts/verify_release.py --ref v0.2.0 --archive dist/my-journal-v0.2.0.tar.gz
 ```
 
 See `CONTRIBUTING.md`, `COMPATIBILITY.md`, and `CHANGELOG.md` for the complete release boundary.

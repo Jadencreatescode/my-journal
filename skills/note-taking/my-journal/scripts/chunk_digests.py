@@ -9,7 +9,7 @@ from typing import Any
 
 from atomic_files import atomic_write_text
 from collect_journal import reject_symlink_components
-from safe_files import safe_mkdir_tree, safe_read_text
+from safe_files import canonical_descriptor_path, safe_mkdir_tree, safe_read_text
 
 
 _RESERVED_PREFIXES = (
@@ -29,7 +29,7 @@ def _sha256_bytes(data: bytes) -> str:
 
 
 def _journal_root(plan_path: Path) -> Path:
-    absolute = plan_path.expanduser().absolute()
+    absolute = canonical_descriptor_path(plan_path)
     try:
         root = absolute.parents[4]
     except IndexError as exc:
@@ -41,7 +41,7 @@ def _journal_root(plan_path: Path) -> Path:
 
 def _inside_lexically(path: Path, parent: Path) -> bool:
     try:
-        path.expanduser().absolute().relative_to(parent.expanduser().absolute())
+        canonical_descriptor_path(path).relative_to(canonical_descriptor_path(parent))
         return True
     except ValueError:
         return False
@@ -65,7 +65,7 @@ def _header_values(text: str) -> tuple[dict[str, str], list[str], str]:
 
 def load_packet_plan(plan_path: Path) -> dict[str, Any]:
     """Load and verify an immutable packet plan and every indexed chunk."""
-    plan_path = plan_path.expanduser().absolute()
+    plan_path = canonical_descriptor_path(plan_path)
     journal_root = _journal_root(plan_path)
     try:
         plan = json.loads(safe_read_text(journal_root, plan_path, max_bytes=2_000_000))
@@ -172,8 +172,8 @@ def _validate_receipt(text: str, plan: dict[str, Any], chunk: dict[str, Any]) ->
 def next_pending_chunk(plan_path: Path, digest_dir: Path) -> dict[str, Any] | None:
     """Return the first chunk lacking one valid receipt, or None when complete."""
     plan = load_packet_plan(plan_path)
-    expected_dir = _expected_digest_dir(plan_path, plan).absolute()
-    digest_dir = digest_dir.expanduser().absolute()
+    expected_dir = canonical_descriptor_path(_expected_digest_dir(plan_path, plan))
+    digest_dir = canonical_descriptor_path(digest_dir)
     if digest_dir != expected_dir:
         raise ValueError("digest directory is outside the owned run directory")
     reject_symlink_components(digest_dir)
@@ -202,8 +202,8 @@ def accept_chunk_digest(
     if len(matches) != 1:
         raise ValueError("chunk identity is not present exactly once in the packet plan")
     chunk = matches[0]
-    expected_dir = _expected_digest_dir(plan_path, plan).absolute()
-    digest_dir = digest_dir.expanduser().absolute()
+    expected_dir = canonical_descriptor_path(_expected_digest_dir(plan_path, plan))
+    digest_dir = canonical_descriptor_path(digest_dir)
     if digest_dir != expected_dir:
         raise ValueError("digest directory is outside the owned run directory")
     reject_symlink_components(digest_dir)
