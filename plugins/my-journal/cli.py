@@ -17,7 +17,16 @@ from .tools import (
     handle_setup_plan,
     handle_status,
 )
-from .operations import maintenance, preview, purge, run_backfill, run_generation, schedule_create, schedule_remove
+from .operations import (
+    maintenance,
+    preview,
+    purge,
+    reset_failed_pending,
+    run_backfill,
+    run_generation,
+    schedule_create,
+    schedule_remove,
+)
 
 
 def register_cli(parser: argparse.ArgumentParser) -> None:
@@ -61,6 +70,11 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     cron_setup.add_argument("--deliver", default="local")
     subs.add_parser("cron-remove", help="Remove the daily Hermes journal job")
     subs.add_parser("maintenance", help="Inspect gaps and pending runs")
+    pending_reset = subs.add_parser("pending-reset", help="Reset one exact failed pending run")
+    pending_reset.add_argument("journal_date")
+    pending_reset.add_argument("run_id")
+    pending_reset.add_argument("--apply", action="store_true")
+    pending_reset.add_argument("--confirm", default="")
     purge_parser = subs.add_parser("purge", help="Delete journal data and preserve configuration")
     purge_parser.add_argument("--apply", action="store_true")
     purge_parser.add_argument("--confirm", default="")
@@ -123,6 +137,18 @@ def journal_command(args: argparse.Namespace) -> int:
         output = json.dumps(schedule_remove())
     elif command == "maintenance":
         output = json.dumps(maintenance())
+    elif command == "pending-reset":
+        try:
+            output = json.dumps(
+                reset_failed_pending(
+                    args.journal_date,
+                    args.run_id,
+                    args.confirm,
+                    apply=args.apply,
+                )
+            )
+        except Exception as exc:
+            output = json.dumps({"error": str(exc)})
     elif command == "purge":
         try:
             output = json.dumps(purge(args.confirm, apply=args.apply))

@@ -23,7 +23,7 @@ from .core import (
     validate_pending_receipt,
     validated_entry_dates,
 )
-from .tools import _completion_evidence_valid, _missing_days, journal_root
+from .tools import _completion_evidence_valid, _generation_collect, _missing_days, journal_root
 
 
 PURGE_DIRECTORIES = (
@@ -31,6 +31,8 @@ PURGE_DIRECTORIES = (
 )
 _GENERATION_RECEIPT = re.compile(r"generation-[0-9a-f]{16}\.json")
 _GENERATION_LOCK = re.compile(r"generation-[0-9a-f]{16}\.lock")
+_RUN_ID = re.compile(r"[0-9a-f]{16}")
+_PACKET_NAME = re.compile(r"chunk-[0-9]{6}\.md")
 _OWNED_ATOMIC_TEMP = re.compile(
     r"\.(?:cron-job|cron-job-intent)\.json\.[0-9a-f]{48}\.tmp"
     r"|\.generation-[0-9a-f]{16}\.json\.(?:[0-9a-f]{24}|[0-9a-f]{48})\.tmp"
@@ -328,7 +330,49 @@ def run_generation(request: str, *, expected_dates: list[str]) -> dict:
         "--source", "tool",
     ]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        child_environment = os.environ.copy()
+        windows_home = os.environ.get("MY_JOURNAL_WINDOWS_HERMES_HOME", "").strip()
+        windows_root = os.environ.get("MY_JOURNAL_WINDOWS_JOURNAL_ROOT", "").strip()
+        if bool(windows_home) != bool(windows_root):
+            raise ValueError("Windows Journal bridge child paths are incomplete")
+        if windows_home:
+            child_environment["HERMES_HOME"] = windows_home
+            child_environment["MY_JOURNAL_ROOT"] = windows_root
+            for journal_date in expected_dates:
+                collection = _generation_collect(journal_date)
+                if not collection.get("ok"):
+                    message = str(
+                        collection.get("error")
+                        or collection.get("reason")
+                        or "immutable Journal precollection failed"
+                    )[:2000]
+                    active_pending = _active_pending_dates(root, expected_dates)
+                    ledger.update(
+                        {
+                            "status": "failed",
+                            "missing_dates": list(expected_dates),
+                            "active_pending_dates": active_pending,
+                        }
+                    )
+                    _safe_files.safe_atomic_write_text(
+                        root, ledger_path, json.dumps(ledger, indent=2) + "\n"
+                    )
+                    return {
+                        "ok": False,
+                        "request_id": request_id,
+                        "exit_code": 1,
+                        "missing_dates": list(expected_dates),
+                        "active_pending_dates": active_pending,
+                        "output": "",
+                        "error": message,
+                    }
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=child_environment,
+        )
         available = (
             validated_entry_dates(root, min(parsed_dates), max(parsed_dates))
             if parsed_dates
@@ -598,6 +642,163 @@ def _active_pending_dates(root: Path, expected_dates: list[str]) -> list[str]:
         elif journal_date in expected and not _pending_receipt_is_completed(root, item, receipt):
             active.add(journal_date)
     return sorted(active)
+
+
+def _remove_owned_reset_target(root: Path, target: Path, *, directory: bool) -> None:
+    parent_descriptor = _safe_files.open_directory_fd(target.parent)
+    opened_descriptor: int | None = None
+    try:
+        metadata = os.stat(target.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if directory:
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise ValueError(f"failed pending reset target is not an owned directory: {target}")
+            opened_descriptor = _safe_files.open_directory_fd(target)
+        else:
+            opened_descriptor = os.open(
+                target.name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+            opened_metadata = os.fstat(opened_descriptor)
+            if not stat.S_ISREG(opened_metadata.st_mode):
+                raise ValueError(f"failed pending reset target is not an owned file: {target}")
+        assert opened_descriptor is not None
+        current = os.stat(target.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        opened = os.fstat(opened_descriptor)
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError(f"failed pending reset target changed before deletion: {target}")
+        if directory:
+            shutil.rmtree(target.name, dir_fd=parent_descriptor)
+        else:
+            os.unlink(target.name, dir_fd=parent_descriptor)
+        os.fsync(parent_descriptor)
+    finally:
+        if opened_descriptor is not None:
+            os.close(opened_descriptor)
+        os.close(parent_descriptor)
+
+
+def reset_failed_pending(
+    journal_date: str,
+    run_id: str,
+    confirmation: str = "",
+    *,
+    apply: bool = False,
+) -> dict:
+    try:
+        parsed_date = date.fromisoformat(journal_date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("failed pending reset requires a canonical ISO date") from exc
+    if parsed_date.isoformat() != journal_date:
+        raise ValueError("failed pending reset requires a canonical ISO date")
+    if not isinstance(run_id, str) or _RUN_ID.fullmatch(run_id) is None:
+        raise ValueError("failed pending reset requires a sixteen character lowercase run ID")
+    expected_confirmation = f"RESET FAILED JOURNAL RUN {journal_date} {run_id}"
+    if apply and confirmation != expected_confirmation:
+        raise ValueError(f"failed pending reset requires exact confirmation: {expected_confirmation}")
+
+    root = journal_root().expanduser().absolute()
+    year, month, _ = journal_date.split("-")
+    pending_path = root / "pending" / f"{run_id}.json"
+    manifest_path = root / "evidence" / year / month / f"{journal_date}-{run_id}.json"
+    packet_dir = root / "packets" / year / month / f"{journal_date}-{run_id}"
+    packet_plan_path = packet_dir / "plan.json"
+    run_dir = root / "runs" / run_id
+    state_path = root / "state" / f"{run_id}.json"
+    note_path = root / "notes" / year / month / f"{journal_date}.md"
+
+    receipt = validate_pending_receipt(
+        json.loads(_safe_files.safe_read_text(root, pending_path, max_bytes=1_000_000)),
+        expected_run_id=run_id,
+    )
+    if receipt["journal_date"] != journal_date:
+        raise ValueError("failed pending reset receipt does not match the requested date")
+    if receipt["manifest_path"] != str(manifest_path):
+        raise ValueError("failed pending reset receipt does not own its manifest path")
+    if receipt["packet_plan_path"] != str(packet_plan_path):
+        raise ValueError("failed pending reset receipt does not own its packet plan path")
+    expected_packets = [
+        str(packet_dir / f"chunk-{index:06d}.md")
+        for index in range(1, len(receipt["packet_paths"]) + 1)
+    ]
+    if receipt["packet_paths"] != expected_packets or receipt["packet_path"] != expected_packets[0]:
+        raise ValueError("failed pending reset receipt does not own its owned packet paths")
+    if any(_PACKET_NAME.fullmatch(Path(path).name) is None for path in expected_packets):
+        raise ValueError("failed pending reset receipt has invalid owned packet paths")
+
+    if journal_date in validated_entry_dates(root, parsed_date, parsed_date):
+        raise ValueError("failed pending reset refused because a validated canonical entry exists")
+    for protected in (note_path, state_path, run_dir / "completion.json", run_dir / "completed-pending-receipt.json"):
+        try:
+            protected.lstat()
+        except FileNotFoundError:
+            continue
+        raise ValueError(f"failed pending reset refused because canonical or completed state exists: {protected}")
+
+    _safe_files.safe_read_text(root, manifest_path, max_bytes=8_000_000)
+    _safe_files.safe_read_text(root, packet_plan_path, max_bytes=1_000_000)
+    for packet in expected_packets:
+        _safe_files.safe_read_text(root, Path(packet), max_bytes=2_000_000)
+    run_descriptor = _safe_files.open_directory_fd(run_dir)
+    os.close(run_descriptor)
+
+    candidates = [str(run_dir), str(packet_dir), str(manifest_path), str(pending_path)]
+    if not apply:
+        return {
+            "ok": True,
+            "preview": True,
+            "journal_date": journal_date,
+            "run_id": run_id,
+            "confirmation": expected_confirmation,
+            "candidates": candidates,
+            "removed": [],
+        }
+
+    root_descriptor = _open_directory(root)
+    lock_identity = json.dumps([journal_date], separators=(",", ":"), sort_keys=True)
+    lock_name = f"generation-{hashlib.sha256(lock_identity.encode('utf-8')).hexdigest()[:16]}.lock"
+    lock_descriptor: int | None = None
+    lock_metadata: os.stat_result | None = None
+    removed: list[str] = []
+    try:
+        lock_descriptor = os.open(
+            lock_name,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=root_descriptor,
+        )
+        lock_metadata = os.fstat(lock_descriptor)
+        if not stat.S_ISREG(lock_metadata.st_mode):
+            raise ValueError("failed pending reset generation lock is unsafe")
+        try:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("failed pending reset refused while journal generation is active") from exc
+        for target, directory in (
+            (run_dir, True),
+            (packet_dir, True),
+            (manifest_path, False),
+            (pending_path, False),
+        ):
+            _remove_owned_reset_target(root, target, directory=directory)
+            removed.append(str(target))
+    finally:
+        try:
+            if lock_metadata is not None:
+                _unlink_generation_lock(root_descriptor, lock_name, lock_metadata)
+            os.fsync(root_descriptor)
+        finally:
+            if lock_descriptor is not None:
+                os.close(lock_descriptor)
+            os.close(root_descriptor)
+    return {
+        "ok": True,
+        "preview": False,
+        "journal_date": journal_date,
+        "run_id": run_id,
+        "candidates": candidates,
+        "removed": removed,
+    }
 
 
 def maintenance() -> dict:

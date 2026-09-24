@@ -1,7 +1,7 @@
 ---
 name: journal
 description: Query validated My Journal entries by date, project, change, decision, timeline, or open work.
-version: 0.1.0
+version: 0.2.0-alpha.1
 author: Jaden Gibson
 license: MIT
 metadata:

@@ -19,6 +19,51 @@ def load_module():
 
 
 class SafeFileTests(unittest.TestCase):
+    def test_descriptor_sqlite_uri_adds_immutable_only_for_explicit_bridge_mode(self):
+        module = load_module()
+        with mock.patch.object(module.os.path, "isdir", return_value=True), mock.patch.dict(
+            module.os.environ, {}, clear=True
+        ):
+            self.assertEqual(module.descriptor_sqlite_uri(7), "file:/proc/self/fd/7?mode=ro")
+        with mock.patch.object(module.os.path, "isdir", return_value=True), mock.patch.dict(
+            module.os.environ, {"MY_JOURNAL_IMMUTABLE_DATABASES": "1"}, clear=True
+        ):
+            self.assertEqual(
+                module.descriptor_sqlite_uri(7),
+                "file:/proc/self/fd/7?mode=ro&immutable=1",
+            )
+        with mock.patch.object(module.os.path, "isdir", return_value=True), mock.patch.dict(
+            module.os.environ, {"MY_JOURNAL_IMMUTABLE_DATABASES": "true"}, clear=True
+        ):
+            with self.assertRaisesRegex(ValueError, "must equal 1"):
+                module.descriptor_sqlite_uri(7)
+
+    def test_immutable_snapshot_guard_rejects_wal_or_database_mutation(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            module.os.environ, {"MY_JOURNAL_IMMUTABLE_DATABASES": "1"}, clear=True
+        ):
+            root = Path(tmp)
+            database = root / "state.db"
+            database.write_bytes(b"database")
+            descriptor = module.safe_open_regular_fd(root, database)
+            try:
+                token = module.begin_sqlite_snapshot(root, database, descriptor)
+                module.verify_sqlite_snapshot(root, database, descriptor, token)
+
+                wal = root / "state.db-wal"
+                wal.write_bytes(b"active")
+                with self.assertRaisesRegex(ValueError, "write ahead log"):
+                    module.begin_sqlite_snapshot(root, database, descriptor)
+                wal.unlink()
+
+                token = module.begin_sqlite_snapshot(root, database, descriptor)
+                database.write_bytes(b"changed database")
+                with self.assertRaisesRegex(ValueError, "changed during collection"):
+                    module.verify_sqlite_snapshot(root, database, descriptor, token)
+            finally:
+                os.close(descriptor)
+
     def test_descriptor_path_canonicalizes_standard_macos_root_alias(self):
         module = load_module()
 

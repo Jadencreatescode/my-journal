@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 alpha 1
+
+Adds an owner selected native Windows Hermes integration backed by a restricted Ubuntu WSL Journal runtime.
+
+### Included
+
+1. A platform neutral native Windows plugin registration path that never imports Linux only locking modules.
+2. A bounded JSON bridge with fixed operation allowlists, fixed argument vectors, local drive path validation, and no shell execution.
+3. Native Hermes 19 tool registration while Journal filesystem operations remain descriptor anchored inside WSL.
+4. Immutable descriptor SQLite access for Windows mounted databases with empty write ahead log checks and before versus after database identity verification.
+5. Native Windows Hermes child generation using the Windows Hermes home and Journal root, without launching the obsolete WSL Hermes agent.
+
 ## 0.1.0
 
 Promotes the reconciled alpha line to the first stable release. Stable 0.1.0 keeps the strict alpha 5 filesystem and receipt contract while restoring the alpha 3 completion, recovery, and scheduling guarantees.

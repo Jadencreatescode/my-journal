@@ -2,7 +2,7 @@
 
 ## Supported version
 
-Version `0.1.0` receives security fixes.
+Versions `0.1.0` and `0.2.0-alpha.1` receive security fixes.
 
 ## Reporting
 

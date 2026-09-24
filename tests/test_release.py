@@ -35,21 +35,27 @@ def create_repo(root: Path) -> str:
     git(root, "config", "user.email", "release-tests@example.invalid")
     git(root, "config", "user.name", "Release Tests")
     required_files = {
-        "README.md": "My Journal `0.1.0` release fixture\n",
+        "README.md": "My Journal `0.2.0-alpha.1` release fixture\n",
         "LICENSE": "MIT\n",
         "install.py": "print('fixture')\n",
-        "pyproject.toml": "version = \"0.1.0\"\nrelease = \"0.1.0\"\n",
-        "SECURITY.md": "Version `0.1.0` receives security fixes.\n",
-        "COMPATIBILITY.md": "Stable 0.1.0 compatibility contract.\n",
+        "install-windows.ps1": "Write-Output 'fixture'\n",
+        "pyproject.toml": "version = \"0.2.0a1\"\nrelease = \"0.2.0-alpha.1\"\n",
+        "SECURITY.md": "Version `0.2.0-alpha.1` receives security fixes.\n",
+        "COMPATIBILITY.md": "Windows WSL bridge candidate contract.\n",
         "PRIVACY.md": "The stable release uses nonreversible references.\n",
-        "THREAT_MODEL.md": "Native Windows support is outside scope.\n",
-        "plugins/my-journal/plugin.yaml": "version: 0.1.0\n",
+        "THREAT_MODEL.md": "Windows operation requires the restricted WSL runtime.\n",
+        "plugins/my-journal/plugin.yaml": "version: 0.2.0-alpha.1\n",
         "plugins/my-journal/__init__.py": "VALUE = 1\n",
         "plugins/my-journal/onboarding.py": "VALUE = 1\n",
+        "plugins/my-journal/schemas.py": "VALUE = 1\n",
+        "plugins/my-journal/windows_bridge.py": "VALUE = 1\n",
+        "plugins/my-journal/wsl_runtime.py": "VALUE = 1\n",
         "plugins/my-journal/tests/test_onboarding.py": "# onboarding tests\n",
         "plugins/my-journal/tests/test_runtime_hardening.py": "# runtime tests\n",
-        "skills/note-taking/my-journal/SKILL.md": "version: 0.1.0\n# Evidence skill\n",
-        "skills/note-taking/journal/SKILL.md": "version: 0.1.0\n# Journal skill\n",
+        "plugins/my-journal/tests/test_windows_bridge.py": "# bridge tests\n",
+        "plugins/my-journal/tests/test_wsl_runtime.py": "# runtime tests\n",
+        "skills/note-taking/my-journal/SKILL.md": "version: 0.2.0-alpha.1\n# Evidence skill\n",
+        "skills/note-taking/journal/SKILL.md": "version: 0.2.0-alpha.1\n# Journal skill\n",
     }
     for relative, content in required_files.items():
         path = root / relative
@@ -61,32 +67,44 @@ def create_repo(root: Path) -> str:
 
 
 class ReleaseToolTests(unittest.TestCase):
-    def test_stable_version_metadata_and_wsl_support_are_synchronized(self):
+    def test_windows_installer_is_a_fixed_wrapper_around_transactional_installer(self):
+        content = (ROOT / "install-windows.ps1").read_text(encoding="utf-8")
+        self.assertIn("[System.IO.Path]::GetFullPath($WindowsPath)", content)
+        self.assertIn("[System.IO.Path]::GetPathRoot($fullPath)", content)
+        self.assertIn("/mnt/$drive/$relativePath", content)
+        self.assertIn("local Windows drive", content)
+        self.assertIn('"--hermes-home", $WslHome', content)
+        self.assertIn('"$WslSource/install.py"', content)
+        self.assertIn("$Arguments += \"--upgrade\"", content)
+        self.assertNotIn("Invoke-Expression", content)
+        self.assertNotIn("cmd.exe", content)
+
+    def test_candidate_version_metadata_and_windows_bridge_support_are_synchronized(self):
         builder = load_script("build_release")
-        self.assertEqual(builder.VERSION, "0.1.0")
+        self.assertEqual(builder.VERSION, "0.2.0-alpha.1")
         expected = {
-            "pyproject.toml": ("version = \"0.1.0\"", "release = \"0.1.0\""),
-            "plugins/my-journal/plugin.yaml": ("version: 0.1.0",),
-            "skills/note-taking/journal/SKILL.md": ("version: 0.1.0",),
-            "skills/note-taking/my-journal/SKILL.md": ("version: 0.1.0",),
+            "pyproject.toml": ("version = \"0.2.0a1\"", "release = \"0.2.0-alpha.1\""),
+            "plugins/my-journal/plugin.yaml": ("version: 0.2.0-alpha.1", "  - windows"),
+            "skills/note-taking/journal/SKILL.md": ("version: 0.2.0-alpha.1",),
+            "skills/note-taking/my-journal/SKILL.md": ("version: 0.2.0-alpha.1", "platforms: [linux, macos, windows]"),
             ".github/workflows/release.yml": (
-                "default: v0.1.0",
-                'test "$RELEASE_REF" = "v0.1.0"',
+                "default: v0.2.0-alpha.1",
+                'test "$RELEASE_REF" = "v0.2.0-alpha.1"',
                 "ref: ${{ inputs.ref }}",
                 "python3 scripts/check_release_tree.py --root .",
                 "python3 scripts/compile_all.py",
                 "python3 -m unittest discover -s plugins/my-journal/tests",
                 "python3 -m unittest discover -s skills/note-taking/my-journal/tests",
                 "python3 -m unittest discover -s tests",
-                "my-journal-v0.1.0.tar.gz",
+                "my-journal-v0.2.0-alpha.1.tar.gz",
             ),
             "README.md": (
-                "My Journal `0.1.0`",
-                "Ubuntu under WSL is supported as a Linux environment",
-                "--ref v0.1.0",
+                "My Journal `0.2.0-alpha.1`",
+                "native Windows Hermes",
+                "--ref v0.2.0-alpha.1",
             ),
-            "COMPATIBILITY.md": ("Ubuntu under WSL is supported as a Linux environment",),
-            "SECURITY.md": ("`0.1.0`",),
+            "COMPATIBILITY.md": ("Native Windows Hermes with Ubuntu WSL",),
+            "SECURITY.md": ("`0.2.0-alpha.1`",),
         }
         for relative, fragments in expected.items():
             content = (ROOT / relative).read_text(encoding="utf-8")
@@ -160,7 +178,7 @@ class ReleaseToolTests(unittest.TestCase):
             with tarfile.open(first, "r:gz") as opened:
                 names = [member.name for member in opened.getmembers()]
             self.assertEqual(names, sorted(names))
-            root_name = "my-journal-v0.1.0"
+            root_name = "my-journal-v0.2.0-alpha.1"
             self.assertTrue(
                 all(name == root_name or name.startswith(root_name + "/") for name in names)
             )
@@ -217,7 +235,7 @@ class ReleaseToolTests(unittest.TestCase):
             git(repo, "commit", "-q", "-m", "alpha metadata")
             alpha_commit = git(repo, "rev-parse", "HEAD")
 
-            with self.assertRaisesRegex(ValueError, "stable release metadata"):
+            with self.assertRaisesRegex(ValueError, "release metadata"):
                 builder.build(alpha_commit, base / "dist", repo=repo)
 
     def test_builder_rejects_alpha_plugin_line_when_other_metadata_is_stable(self):

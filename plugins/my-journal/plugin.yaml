@@ -1,11 +1,12 @@
 name: my-journal
-version: 0.1.0
-description: "Deterministic date, validation, status, gap, and backfill tools for the My Journal skill."
+version: 0.2.0-alpha.1
+description: "Deterministic date, validation, status, gap, and backfill tools for My Journal, including the restricted native Windows to WSL runtime."
 author: Jaden Gibson
 kind: standalone
 platforms:
   - linux
   - macos
+  - windows
 provides_tools:
   - journal_status
   - journal_resolve_range

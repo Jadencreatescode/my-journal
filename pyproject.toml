@@ -1,6 +1,6 @@
 [project]
 name = "my-journal-for-hermes"
-version = "0.1.0"
+version = "0.2.0a1"
 description = "The evidence backed activity journal for Hermes"
 requires-python = ">=3.11,<3.14"
 license = {text = "MIT"}
@@ -10,5 +10,5 @@ authors = [{name = "Jaden Gibson"}]
 Documentation = "https://github.com/Jadencreatescode/my-journal"
 
 [tool.my-journal]
-release = "0.1.0"
-supported-platforms = ["linux", "macos"]
+release = "0.2.0-alpha.1"
+supported-platforms = ["linux", "macos", "windows-wsl-bridge"]

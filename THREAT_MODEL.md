@@ -19,7 +19,7 @@
 ## Controls
 
 1. Descriptor anchored reads, directory creation, writes, renames, and removals with symlink refusal.
-2. Read only SQLite access through an anchored file descriptor, with a compiled database size ceiling and bounded SQL extraction before redaction.
+2. Read only SQLite access through an anchored file descriptor, with a compiled database size ceiling and bounded SQL extraction before redaction. The Windows bridge additionally requires immutable SQLite mode, an empty write ahead log before and after each read, and an unchanged held database identity, size, and modification time.
 3. Compiled discovery, raw field, collection, and output ceilings that callers cannot raise.
 4. Mandatory secret redaction and declared privacy policy validation.
 5. Deterministic chunk identities and resumable digest receipts.
@@ -36,4 +36,4 @@
 2. Compromise of the selected model provider or Hermes itself.
 3. Recovery of deleted or unavailable session history.
 4. Proof that regex and entropy redaction catches every possible secret.
-5. Native Windows support. Ubuntu under WSL is covered by the Linux support path.
+5. Native Windows operation without the restricted Ubuntu WSL runtime.

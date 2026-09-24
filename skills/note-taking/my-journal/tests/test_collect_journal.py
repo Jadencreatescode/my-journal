@@ -138,6 +138,25 @@ class DiscoverDatabaseTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     parser.parse_args([flag, "-1"])
 
+    def test_bridge_collection_rejects_nonempty_wal_before_accepting_sessions(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            module.os.environ, {"MY_JOURNAL_IMMUTABLE_DATABASES": "1"}, clear=True
+        ):
+            home = Path(tmp)
+            db = home / "state.db"
+            create_db(db)
+            with db_connection(db) as con:
+                add_session(con, "bridge", "cli", 100.0, "Bridge")
+                add_message(con, 1, "bridge", "user", "Captured", 110.0)
+            (home / "state.db-wal").write_bytes(b"active")
+
+            manifest = module.collect_range(home, 100.0, 200.0)
+
+            self.assertEqual(manifest["coverage"]["database_error_count"], 1)
+            self.assertEqual(manifest["coverage"]["session_count"], 0)
+            self.assertIn("write ahead log", manifest["databases"][0]["error"])
+
     def test_collects_from_path_containing_uri_control_characters(self):
         module = load_module()
         with tempfile.TemporaryDirectory(prefix="journal?") as tmp:
@@ -355,6 +374,30 @@ class CollectionTests(unittest.TestCase):
         self.assertNotIn("secret value with spaces", json_redacted)
         self.assertIn('"safe": true', json_redacted)
         self.assertFalse(module.contains_likely_secret(json_redacted))
+
+    def test_bound_text_reprocesses_redacted_authorization_source_expression(self):
+        module = load_module()
+        raw = (
+            "token=vals.get('GH_TOKEN') or vals.get('GITHUB_TOKEN')\n"
+            "headers={'Authorization': 'Bearer '+token,'User-Agent':'journal'}\n"
+            + ("x" * 200)
+        )
+        first_pass = module.redact_sensitive(
+            raw,
+            pii_mode="preserve",
+            entropy_mode="report",
+        ).text
+        self.assertTrue(module.contains_likely_secret(first_pass))
+
+        bounded = module.bound_text(
+            raw,
+            len(first_pass) - 20,
+            pii_mode="preserve",
+            entropy_mode="report",
+        )
+
+        self.assertIn("[TRUNCATED", bounded)
+        self.assertFalse(module.contains_likely_secret(bounded))
 
     def test_redacts_broad_secret_families_without_leaving_trailing_values(self):
         module = load_module()

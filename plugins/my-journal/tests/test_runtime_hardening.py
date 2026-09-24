@@ -44,6 +44,36 @@ def hold_generation_lock(root: str, lock_name: str, ready) -> None:
         os.close(descriptor)
 
 
+def write_pending_run(root: Path, journal_date: str, run_id: str) -> dict:
+    year, month, _ = journal_date.split("-")
+    manifest = root / "evidence" / year / month / f"{journal_date}-{run_id}.json"
+    packet_dir = root / "packets" / year / month / f"{journal_date}-{run_id}"
+    packet = packet_dir / "chunk-000001.md"
+    plan = packet_dir / "plan.json"
+    pending = root / "pending" / f"{run_id}.json"
+    digest = root / "runs" / run_id / "digests" / "chunk-000001.md"
+    for path in (manifest, packet, plan, pending, digest):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n" if path.suffix == ".json" else "safe\n", encoding="utf-8")
+    receipt = {
+        "run_id": run_id,
+        "journal_date": journal_date,
+        "manifest_path": str(manifest),
+        "packet_path": str(packet),
+        "packet_paths": [str(packet)],
+        "packet_plan_path": str(plan),
+        "status": "pending_note_validation",
+    }
+    pending.write_text(json.dumps(receipt), encoding="utf-8")
+    return {
+        "receipt": receipt,
+        "manifest": manifest,
+        "packet_dir": packet_dir,
+        "pending": pending,
+        "run_dir": root / "runs" / run_id,
+    }
+
+
 class RuntimeHardeningTests(unittest.TestCase):
     def test_invalid_expected_date_returns_bounded_failure_without_side_effects(self):
         operations = load_operations()
@@ -170,6 +200,95 @@ class RuntimeHardeningTests(unittest.TestCase):
                 result = operations.purge("DELETE MY JOURNAL DATA", apply=True)
             self.assertIn(lock_name, result["removed"])
             self.assertFalse((root / lock_name).exists())
+
+    def test_reset_failed_pending_requires_exact_confirmation_and_removes_only_owned_run(self):
+        operations = load_operations()
+        journal_date = "2026-06-26"
+        run_id = "1f7ce9536c587265"
+        confirmation = f"RESET FAILED JOURNAL RUN {journal_date} {run_id}"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifacts = write_pending_run(root, journal_date, run_id)
+            unrelated = root / "runs" / "aaaaaaaaaaaaaaaa" / "keep.txt"
+            unrelated.parent.mkdir(parents=True)
+            unrelated.write_text("keep", encoding="utf-8")
+            with mock.patch.object(operations, "journal_root", return_value=root):
+                preview = operations.reset_failed_pending(journal_date, run_id)
+                with self.assertRaisesRegex(ValueError, "exact confirmation"):
+                    operations.reset_failed_pending(journal_date, run_id, "wrong", apply=True)
+                result = operations.reset_failed_pending(
+                    journal_date, run_id, confirmation, apply=True
+                )
+
+            self.assertTrue(preview["preview"])
+            self.assertEqual(result["removed"], result["candidates"])
+            self.assertFalse(artifacts["manifest"].exists())
+            self.assertFalse(artifacts["packet_dir"].exists())
+            self.assertFalse(artifacts["pending"].exists())
+            self.assertFalse(artifacts["run_dir"].exists())
+            self.assertEqual(unrelated.read_text(encoding="utf-8"), "keep")
+
+    def test_reset_failed_pending_refuses_canonical_or_unowned_paths(self):
+        operations = load_operations()
+        journal_date = "2026-07-30"
+        run_id = "11e948a481a9300c"
+        confirmation = f"RESET FAILED JOURNAL RUN {journal_date} {run_id}"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifacts = write_pending_run(root, journal_date, run_id)
+            note = root / "notes" / "2026" / "07" / f"{journal_date}.md"
+            note.parent.mkdir(parents=True)
+            note.write_text("validated", encoding="utf-8")
+            with mock.patch.object(operations, "journal_root", return_value=root), mock.patch.object(
+                operations, "validated_entry_dates", return_value=[journal_date]
+            ):
+                with self.assertRaisesRegex(ValueError, "canonical"):
+                    operations.reset_failed_pending(
+                        journal_date, run_id, confirmation, apply=True
+                    )
+            note.unlink()
+            outside = root / "outside.md"
+            outside.write_text("keep", encoding="utf-8")
+            receipt = artifacts["receipt"]
+            receipt["packet_path"] = str(outside)
+            receipt["packet_paths"] = [str(outside)]
+            artifacts["pending"].write_text(json.dumps(receipt), encoding="utf-8")
+            with mock.patch.object(operations, "journal_root", return_value=root):
+                with self.assertRaisesRegex(ValueError, "owned packet paths"):
+                    operations.reset_failed_pending(
+                        journal_date, run_id, confirmation, apply=True
+                    )
+            self.assertEqual(outside.read_text(encoding="utf-8"), "keep")
+            self.assertTrue(artifacts["manifest"].exists())
+
+    def test_active_generation_blocks_failed_pending_reset_without_deleting_artifacts(self):
+        operations = load_operations()
+        journal_date = "2026-06-26"
+        run_id = "1f7ce9536c587265"
+        confirmation = f"RESET FAILED JOURNAL RUN {journal_date} {run_id}"
+        lock_identity = json.dumps([journal_date], separators=(",", ":"), sort_keys=True)
+        lock_name = f"generation-{hashlib.sha256(lock_identity.encode()).hexdigest()[:16]}.lock"
+        context = get_context("fork")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifacts = write_pending_run(root, journal_date, run_id)
+            ready = context.Event()
+            process = context.Process(target=hold_generation_lock, args=(tmp, lock_name, ready))
+            process.start()
+            self.assertTrue(ready.wait(5))
+            try:
+                with mock.patch.object(operations, "journal_root", return_value=root):
+                    with self.assertRaisesRegex(ValueError, "generation is active"):
+                        operations.reset_failed_pending(
+                            journal_date, run_id, confirmation, apply=True
+                        )
+                self.assertTrue(artifacts["manifest"].exists())
+                self.assertTrue(artifacts["packet_dir"].exists())
+                self.assertTrue(artifacts["pending"].exists())
+                self.assertTrue(artifacts["run_dir"].exists())
+            finally:
+                process.terminate()
+                process.join(5)
 
     def test_purge_removes_owned_guided_approval_plans(self):
         operations = load_operations()

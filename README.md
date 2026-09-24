@@ -2,7 +2,7 @@
 
 **The evidence backed activity journal for Hermes.**
 
-My Journal `0.1.0` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines guided first use, bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, 11 deterministic journal tools, four restricted generation tools, and the scriptable `hermes journal` command family.
+My Journal `0.2.0-alpha.1` turns explicitly authorized Hermes session history into provenance bound daily Markdown notes. It combines guided first use, bounded read only collection, credential redaction, deterministic evidence chunks, resumable digests, validation, a conversational journal skill, 11 deterministic journal tools, four restricted generation tools, and the scriptable `hermes journal` command family.
 
 Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` before enabling collection.
 
@@ -17,12 +17,12 @@ Markdown under `journal/notes/YYYY/MM/YYYY-MM-DD.md` is canonical. Semantic stor
 
 ## Requirements
 
-1. Linux or macOS.
+1. Linux, macOS, or native Windows Hermes with Ubuntu WSL available for the restricted Journal runtime.
 2. Python 3.11, 3.12, or 3.13.
 3. A Hermes Agent installation with skills, standalone plugins, native cron management, and noninteractive chat.
 4. An IANA timezone available through Python `zoneinfo`.
 
-Ubuntu under WSL is supported as a Linux environment. Native Windows support is not claimed.
+On native Windows, Hermes owns the plugin, skills, tools, and model interaction. Ubuntu WSL performs only the restricted Journal runtime. It does not run a second conversational Hermes agent. The obsolete WSL Hermes installation is not required by the bridge.
 
 ## Install
 
@@ -231,8 +231,8 @@ python3 -m unittest discover -s skills/note-taking/my-journal/tests -v
 The deterministic release archive is built only from a Git reference:
 
 ```text
-python3 scripts/build_release.py --ref v0.1.0 --output dist
-python3 scripts/verify_release.py --ref v0.1.0 --archive dist/my-journal-v0.1.0.tar.gz
+python3 scripts/build_release.py --ref v0.2.0-alpha.1 --output dist
+python3 scripts/verify_release.py --ref v0.2.0-alpha.1 --archive dist/my-journal-v0.2.0-alpha.1.tar.gz
 ```
 
 See `CONTRIBUTING.md`, `COMPATIBILITY.md`, and `CHANGELOG.md` for the complete release boundary.

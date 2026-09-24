@@ -731,11 +731,22 @@ class PluginRegistrationTests(unittest.TestCase):
         plugin = load_plugin()
         operations = sys.modules[f"{plugin.__name__}.operations"]
         completed = type("Completed", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        events = []
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.dict(os.environ, {"MY_JOURNAL_ROOT": tmp}, clear=False), mock.patch.object(
+            bridge_environment = {
+                "MY_JOURNAL_ROOT": tmp,
+                "MY_JOURNAL_WINDOWS_HERMES_HOME": r"C:\Users\jgib7\AppData\Local\hermes",
+                "MY_JOURNAL_WINDOWS_JOURNAL_ROOT": r"C:\Users\jgib7\AppData\Local\hermes\journal",
+            }
+            with mock.patch.dict(os.environ, bridge_environment, clear=False), mock.patch.object(
                 operations, "_hermes_executable", return_value="/hermes"
             ), mock.patch.object(
-                operations.subprocess, "run", return_value=completed
+                operations, "_generation_collect",
+                side_effect=lambda value: events.append(("collect", value)) or {"ok": True},
+                create=True,
+            ) as collect, mock.patch.object(
+                operations.subprocess, "run",
+                side_effect=lambda *args, **kwargs: events.append(("child", args[0])) or completed,
             ) as run, mock.patch.object(
                 operations, "validated_entry_dates", return_value={"2026-07-27"}
             ):
@@ -743,8 +754,19 @@ class PluginRegistrationTests(unittest.TestCase):
                     "Generate journal date 2026-07-27.", expected_dates=["2026-07-27"]
                 )
 
+        collect.assert_called_once_with("2026-07-27")
+        self.assertEqual([event[0] for event in events], ["collect", "child"])
         command = run.call_args.args[0]
+        child_environment = run.call_args.kwargs["env"]
         self.assertTrue(result["ok"])
+        self.assertEqual(
+            child_environment["HERMES_HOME"],
+            r"C:\Users\jgib7\AppData\Local\hermes",
+        )
+        self.assertEqual(
+            child_environment["MY_JOURNAL_ROOT"],
+            r"C:\Users\jgib7\AppData\Local\hermes\journal",
+        )
         self.assertEqual(command[command.index("-t") + 1], "my-journal-generation")
         self.assertIn("--ignore-rules", command)
         self.assertNotIn("--yolo", command)
