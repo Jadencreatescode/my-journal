@@ -1082,6 +1082,17 @@ def _generation_complete(
         if _completion_evidence_valid(root, pending_path):
             year, month, _ = journal_date.split("-")
             run_dir = root / "runs" / run_id
+            if active_binding is not None and active_binding.get("status") == "active":
+                # Same-day self-heal: the scheduled cron's post_script hook
+                # (postvalidate.py) has no execution path in the live
+                # scheduler, so the binding would otherwise sit "active" for
+                # up to 24h until the next morning's precollect self-heal
+                # catches it. Flip it here, in the same call that already
+                # proved completion evidence is valid, instead of waiting.
+                try:
+                    _postvalidate_scheduled_binding(active_binding)
+                except Exception:
+                    pass
             return {
                 "ok": True,
                 "already_completed": True,
@@ -1097,7 +1108,7 @@ def _generation_complete(
                 "completion_path": str(run_dir / "completion.json"),
                 "validated_entry_dates": [journal_date],
             }
-        return _generation_complete_with_pending(
+        result = _generation_complete_with_pending(
             run_id,
             journal_date,
             sections,
@@ -1105,6 +1116,15 @@ def _generation_complete(
             pending_bytes,
             pending_identity,
         )
+        if result.get("ok") is True and active_binding is not None:
+            # Same-day self-heal (see comment above): flip the binding to
+            # completed immediately, right after evidence is proven valid,
+            # instead of depending on a post_script hook that never runs.
+            try:
+                _postvalidate_scheduled_binding(active_binding)
+            except Exception:
+                pass
+        return result
     finally:
         os.close(descriptor)
 
