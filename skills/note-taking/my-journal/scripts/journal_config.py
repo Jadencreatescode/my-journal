@@ -175,10 +175,10 @@ def validate_config_payload(raw: Any) -> JournalConfig:
         max_message_chars=_positive_int(limits.get("max_message_chars", 4000), "max_message_chars"),
         max_tool_chars=_positive_int(limits.get("max_tool_chars", 1200), "max_tool_chars"),
         max_selected_messages=max_selected_messages,
-        max_retained_chars=_positive_int(limits.get("max_retained_chars", 4000000), "max_retained_chars"),
+        max_retained_chars=_positive_int(limits.get("max_retained_chars", 32000000), "max_retained_chars"),
         max_sessions=_positive_int(limits.get("max_sessions", 2000), "max_sessions"),
-        packet_chunk_bytes=_positive_int(limits.get("packet_chunk_bytes", 120000), "packet_chunk_bytes"),
-        max_packet_chunks=_positive_int(limits.get("max_packet_chunks", 64), "max_packet_chunks"),
+        packet_chunk_bytes=_positive_int(limits.get("packet_chunk_bytes", 60000), "packet_chunk_bytes"),
+        max_packet_chunks=_positive_int(limits.get("max_packet_chunks", 4096), "max_packet_chunks"),
     )
     if config.enabled:
         config.require_enabled()

@@ -151,7 +151,7 @@ GENERATION_GET_CHUNK_SCHEMA = {
         "type": "object",
         "properties": {
             "run_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
-            "index": {"type": "integer", "minimum": 1, "maximum": 64},
+            "index": {"type": "integer", "minimum": 1, "maximum": 4096},
         },
         "required": ["run_id", "index"],
         "additionalProperties": False,

@@ -45,16 +45,16 @@ DATABASE_APPROVAL_TIERS = {16 * 1024**3, 32 * 1024**3}
 HARD_MAX_DATABASE_BYTES = 32 * 1024**3
 HARD_MAX_SELECTED_MESSAGES = 100_000
 HARD_MAX_SESSIONS = 10_000
-HARD_MAX_RETAINED_CHARS = 4_000_000
+HARD_MAX_RETAINED_CHARS = 32_000_000
 HARD_MAX_MESSAGE_CHARS = 4_000
 HARD_MAX_TOOL_CHARS = 1_200
 HARD_MAX_RAW_BODY_CHARS = 1_000_000
 HARD_MAX_RAW_METADATA_CHARS = 16_384
 HARD_MAX_RAW_IDENTIFIER_CHARS = 4_096
-HARD_MAX_PACKET_CHUNK_BYTES = 120_000
-HARD_MAX_PACKET_CHUNKS = 64
-HARD_MAX_PACKET_TOTAL_BYTES = 8_000_000
-HARD_MAX_MANIFEST_BYTES = 8_000_000
+HARD_MAX_PACKET_CHUNK_BYTES = 60_000
+HARD_MAX_PACKET_CHUNKS = 4096
+HARD_MAX_PACKET_TOTAL_BYTES = 256_000_000
+HARD_MAX_MANIFEST_BYTES = 256_000_000
 
 
 def _database_confirmation(profile: str, tier: int) -> str:
@@ -661,8 +661,8 @@ def _packet_units(manifest: dict[str, Any]) -> list[str]:
 
 def render_packet_chunks(
     manifest: dict[str, Any],
-    target_bytes: int = 120_000,
-    max_chunks: int = 64,
+    target_bytes: int = 60_000,
+    max_chunks: int = 4096,
 ) -> list[str]:
     """Pack evidence deterministically at message boundaries under a byte ceiling."""
     if target_bytes < 1024:
