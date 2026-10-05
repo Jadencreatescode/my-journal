@@ -22,7 +22,7 @@ _EXPLICIT_RANGE = re.compile(
 )
 _LAST_DAYS = re.compile(r"^\s*last\s+(\d+)\s+days?\s*$", re.IGNORECASE)
 _MAX_NOTE_BYTES = 8_000_000
-_MAX_MANIFEST_BYTES = 8_000_000
+_MAX_MANIFEST_BYTES = 256_000_000
 _MAX_DIGEST_BYTES = 1_000_000
 _RUN_ID = re.compile(r"^[0-9a-f]{16}$")
 _PENDING_RECEIPT_FILE = re.compile(r"^[0-9a-f]{16}\.json$")

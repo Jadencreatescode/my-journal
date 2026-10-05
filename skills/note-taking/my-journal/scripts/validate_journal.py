@@ -617,7 +617,7 @@ def validate_and_commit(
         journal_root = journal_root.parent
     try:
         manifest = json.loads(
-            safe_read_text(journal_root, manifest_path, max_bytes=8_000_000)
+            safe_read_text(journal_root, manifest_path, max_bytes=256_000_000)
         )
     except json.JSONDecodeError:
         return {**base_result, "errors": ["manifest is not valid JSON"]}

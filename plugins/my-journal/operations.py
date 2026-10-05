@@ -605,6 +605,27 @@ def _binding_output(binding: dict, *, chunk_count: int, resumed: bool) -> dict:
     }
 
 
+def _binding_run_evidence_complete(binding) -> bool:
+    """True when the frozen run already carries exact completion evidence.
+
+    Used by the daily prerun to detect a finished run whose scheduled binding
+    was never flipped to completed by postvalidation. Only exact, validated
+    completion evidence counts; anything partial falls through to resume.
+    """
+    root = journal_root().expanduser().absolute()
+    run_id = binding.get("run_id") or ""
+    run_dir = root / "runs" / run_id
+    pending_path = root / "pending" / f"{run_id}.json"
+    try:
+        if not (run_dir / "completion.json").is_file():
+            return False
+        if not pending_path.is_file():
+            return False
+        return bool(_completion_evidence_valid(root, pending_path))
+    except Exception:
+        return False
+
+
 def precollect_daily_generation() -> dict:
     try:
         active = _active_scheduled_bindings()
@@ -613,10 +634,22 @@ def precollect_daily_generation() -> dict:
         if active:
             existing = active[0]
             _verify_scheduled_binding(existing)
-            plan = json.loads(_safe_files.safe_read_text(
-                journal_root(), Path(existing["packet_plan_path"]), max_bytes=8_000_000
-            ))
-            return _binding_output(existing, chunk_count=plan["chunk_count"], resumed=True)
+            try:
+                stale_complete = _binding_run_evidence_complete(existing)
+            except Exception:
+                stale_complete = False
+            if not stale_complete:
+                plan = json.loads(_safe_files.safe_read_text(
+                    journal_root(), Path(existing["packet_plan_path"]), max_bytes=256_000_000
+                ))
+                return _binding_output(existing, chunk_count=plan["chunk_count"], resumed=True)
+            try:
+                _postvalidate_scheduled_binding(existing)
+            except Exception:
+                plan = json.loads(_safe_files.safe_read_text(
+                    journal_root(), Path(existing["packet_plan_path"]), max_bytes=256_000_000
+                ))
+                return _binding_output(existing, chunk_count=plan["chunk_count"], resumed=True)
         start, _ = resolve_date_range("yesterday", timezone_name=journal_timezone())
         journal_date = start.isoformat()
         result = _generation_collect(journal_date)
@@ -1538,8 +1571,8 @@ def _new_reset_intent(
     expected_packets = receipt["packet_paths"]
 
     _refuse_completed_reset_state(root_descriptor, journal_date, run_id)
-    _read_relative_text(root_descriptor, manifest_path, max_bytes=8_000_000)
-    _read_relative_text(root_descriptor, packet_plan_path, max_bytes=1_000_000)
+    _read_relative_text(root_descriptor, manifest_path, max_bytes=256_000_000)
+    _read_relative_text(root_descriptor, packet_plan_path, max_bytes=256_000_000)
     for packet in expected_packets:
         _read_relative_text(root_descriptor, Path(packet).relative_to(root), max_bytes=2_000_000)
 

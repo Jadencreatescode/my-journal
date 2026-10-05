@@ -36,7 +36,8 @@ from .onboarding import (
 GENERATION_TOOLSET = "my-journal-generation"
 _RUN_ID = re.compile(r"[0-9a-f]{16}")
 _MAX_PENDING_RUNS = 4096
-_MAX_CHUNK_BYTES = 120_000
+_MAX_CHUNK_BYTES = 60_000
+_COLLECTION_TIMEOUT_SECONDS = 1200
 _MAX_DIGEST_CHARS = 200_000
 _MAX_SECTION_CHARS = 500_000
 _SECTION_HEADINGS = (
@@ -453,7 +454,7 @@ def _completion_evidence_valid(root: Path, pending_path: Path) -> bool:
         state = validate_completed_state(json.loads(state_bytes.decode("utf-8")), receipt, root)
         manifest_path = Path(receipt["manifest_path"])
         manifest_bytes, manifest_metadata = _read_bytes_identity(
-            root, manifest_path, max_bytes=8_000_000
+            root, manifest_path, max_bytes=256_000_000
         )
         manifest = json.loads(manifest_bytes.decode("utf-8"))
         if not isinstance(manifest, dict) or any(
@@ -508,7 +509,7 @@ def _completion_evidence_valid(root: Path, pending_path: Path) -> bool:
             (pending_path, receipt_bytes, receipt_metadata, 100_000),
             (archive_path, archive_bytes, archive_metadata, 100_000),
             (state_path, state_bytes, state_metadata, 1_000_000),
-            (manifest_path, manifest_bytes, manifest_metadata, 8_000_000),
+            (manifest_path, manifest_bytes, manifest_metadata, 256_000_000),
             (canonical_path, canonical_bytes, canonical_metadata, 8_000_000),
             (completion_path, completion_bytes, completion_metadata, 100_000),
         )
@@ -566,9 +567,9 @@ def _create_scheduled_binding(collection: dict[str, Any]) -> dict[str, Any]:
         "receipt_path": str(receipt_path),
         "receipt_sha256": _sha256_path(receipt_path, max_bytes=100_000),
         "manifest_path": str(manifest_path),
-        "manifest_sha256": _sha256_path(manifest_path, max_bytes=8_000_000),
+        "manifest_sha256": _sha256_path(manifest_path, max_bytes=256_000_000),
         "packet_plan_path": str(packet_plan_path),
-        "packet_plan_sha256": _sha256_path(packet_plan_path, max_bytes=8_000_000),
+        "packet_plan_sha256": _sha256_path(packet_plan_path, max_bytes=256_000_000),
     }
     _safe_files.safe_mkdir_tree(root, _binding_directory())
     _safe_files.safe_atomic_write_text(
@@ -586,8 +587,8 @@ def _verify_scheduled_binding(binding: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("scheduled binding run/date changed")
     for path_key, digest_key, limit in (
         ("receipt_path", "receipt_sha256", 100_000),
-        ("manifest_path", "manifest_sha256", 8_000_000),
-        ("packet_plan_path", "packet_plan_sha256", 8_000_000),
+        ("manifest_path", "manifest_sha256", 256_000_000),
+        ("packet_plan_path", "packet_plan_sha256", 256_000_000),
     ):
         if _sha256_path(Path(binding[path_key]), max_bytes=limit) != binding[digest_key]:
             raise ValueError(f"scheduled binding {digest_key} changed")
@@ -781,7 +782,11 @@ def _generation_collect(journal_date: str) -> dict[str, Any]:
         "--date", journal_date,
     ]
     completed = subprocess.run(
-        command, capture_output=True, text=True, check=False, timeout=300
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_COLLECTION_TIMEOUT_SECONDS,
     )
     try:
         result = json.loads(completed.stdout)
@@ -850,6 +855,18 @@ def _generation_record_digest(run_id: str, chunk_id: str, digest_body: str) -> d
         raise ValueError("chunk_id must be 64 lowercase hexadecimal characters")
     if not isinstance(digest_body, str) or len(digest_body) > _MAX_DIGEST_CHARS:
         raise ValueError("digest body is missing or exceeds its compiled character ceiling")
+    manifest = _manifest_for_pending(pending)
+    policy = manifest.get("policy") if isinstance(manifest.get("policy"), dict) else {}
+    redactor = _script_module("secret_redaction")
+    digest_body = redactor.redact_sensitive(
+        digest_body,
+        pii_mode=policy.get("pii_mode", "mask"),
+        entropy_mode=policy.get("entropy_mode", "report"),
+    ).text
+    if len(digest_body) > _MAX_DIGEST_CHARS:
+        raise ValueError("privacy-redacted digest exceeds compiled character ceiling")
+    if not digest_body.strip():
+        raise ValueError("digest body became empty after privacy redaction")
     digest_dir = journal_root().expanduser().absolute() / "runs" / run_id / "digests"
     receipt = _accept_chunk_digest(
         Path(pending["packet_plan_path"]), digest_dir, chunk_id, digest_body
@@ -875,7 +892,7 @@ def handle_generation_record_digest(args: dict, **kwargs) -> str:
 def _manifest_for_pending(pending: dict[str, Any]) -> dict[str, Any]:
     root = journal_root().expanduser().absolute()
     value = json.loads(
-        _safe_files.safe_read_text(root, Path(pending["manifest_path"]), max_bytes=8_000_000)
+        _safe_files.safe_read_text(root, Path(pending["manifest_path"]), max_bytes=256_000_000)
     )
     if not isinstance(value, dict):
         raise ValueError("evidence manifest root must be an object")
@@ -886,17 +903,26 @@ def _render_note(manifest: dict[str, Any], sections: dict[str, Any], manifest_pa
     if not isinstance(sections, dict) or set(sections) != {key for key, _ in _SECTION_HEADINGS}:
         raise ValueError("sections must contain exactly every required synthesis section")
     rendered = [f"# My Journal: {manifest['journal_date']}", ""]
+    policy = manifest.get("policy") if isinstance(manifest.get("policy"), dict) else {}
+    redactor = _script_module("secret_redaction")
+    pii_mode = policy.get("pii_mode", "mask")
+    entropy_mode = policy.get("entropy_mode", "report")
     total = 0
     for key, heading in _SECTION_HEADINGS:
         value = sections[key]
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"section {key} must be nonempty text")
-        total += len(value)
+        redacted = redactor.redact_sensitive(
+            value, pii_mode=pii_mode, entropy_mode=entropy_mode
+        ).text
+        if not redacted.strip():
+            raise ValueError(f"section {key} became empty after privacy redaction")
+        total += len(redacted)
         if total > _MAX_SECTION_CHARS:
             raise ValueError("synthesis sections exceed compiled character ceiling")
-        if any(line.startswith(_RESERVED_SYNTHESIS_PREFIXES) for line in value.splitlines()):
+        if any(line.startswith(_RESERVED_SYNTHESIS_PREFIXES) for line in redacted.splitlines()):
             raise ValueError(f"section {key} contains reserved provenance text")
-        rendered.extend([f"## {heading}", "", value.strip(), ""])
+        rendered.extend([f"## {heading}", "", redacted.strip(), ""])
     coverage = manifest["coverage"]
     platforms = ", ".join(sorted(coverage["platforms"])) or "(none)"
     profiles = ", ".join(sorted(coverage["profiles"])) or "(none)"
@@ -1012,10 +1038,10 @@ def _generation_complete_with_pending(
     )
     validate_completed_state(json.loads(state_bytes.decode("utf-8")), pending, root)
     manifest_bytes, manifest_metadata = _read_bytes_identity(
-        root, manifest_path, max_bytes=8_000_000
+        root, manifest_path, max_bytes=256_000_000
     )
     canonical_bytes, canonical_metadata = _read_bytes_identity(
-        root, canonical, max_bytes=8_000_000
+        root, canonical, max_bytes=256_000_000
     )
     completion = {
         "schema_version": 1,
@@ -1272,7 +1298,7 @@ GENERATION_GET_CHUNK_SCHEMA = {
         "type": "object",
         "properties": {
             "run_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
-            "index": {"type": "integer", "minimum": 1, "maximum": 64},
+            "index": {"type": "integer", "minimum": 1, "maximum": 4096},
         },
         "required": ["run_id", "index"],
         "additionalProperties": False,
