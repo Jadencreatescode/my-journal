@@ -13,6 +13,7 @@ TEXT_SUFFIXES = {"", ".css", ".html", ".json", ".md", ".ps1", ".py", ".toml", ".
 ALLOWED_BINARY = {
     "docs/assets/my-journal-functionality-demo.png",
     "docs/assets/my-journal-social-preview.png",
+    "docs/assets/my-journal-demo.mp4",
 }
 SECRET_PATTERNS = {
     "private key": re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
@@ -56,6 +57,39 @@ def _png_text_chunks(data: bytes) -> list[str]:
     raise ValueError("PNG is missing IEND")
 
 
+_ASCII_RUN = re.compile(rb"[\x20-\x7e]{6,}")
+
+
+def _mp4_violations(name: str, data: bytes) -> list[str]:
+    """Scan an allowlisted MP4's printable ASCII runs for the same private
+    material classes enforced on text files. MP4 containers can carry
+    incidental metadata (encoder strings, muxer paths) outside the pixel
+    payload, so this does not parse atoms — it treats every printable run
+    as untrusted text and reuses the exact text-file pattern set."""
+    if not (data[4:8] == b"ftyp" or data[4:12] == b"ftypisom"):
+        return [f"{name}: does not look like a valid MP4 container"]
+    found: list[str] = []
+    for run in _ASCII_RUN.findall(data):
+        text = run.decode("ascii", errors="ignore")
+        for label, pattern in SECRET_PATTERNS.items():
+            if pattern.search(text):
+                found.append(f"{name}: likely {label} in embedded metadata")
+        if PRIVATE_ROOT.search(text):
+            found.append(f"{name}: private absolute VPS path in embedded metadata")
+        if PRIVATE_NETWORK.search(text):
+            found.append(f"{name}: private network address in embedded metadata")
+        for match in POSIX_HOME.finditer(text):
+            if match.group(2).lower() not in ALLOWED_EXAMPLE_USERS:
+                found.append(f"{name}: personal home path for {match.group(2)} in embedded metadata")
+        for match in WINDOWS_HOME.finditer(text):
+            if match.group(1).lower() not in ALLOWED_EXAMPLE_USERS:
+                found.append(f"{name}: personal Windows home path for {match.group(1)} in embedded metadata")
+        for match in EMAIL.finditer(text):
+            if match.group(2).lower() not in ALLOWED_EMAIL_DOMAINS:
+                found.append(f"{name}: nonexample email address in embedded metadata")
+    return found
+
+
 def _iter_files(root: Path):
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
@@ -78,6 +112,9 @@ def check_public_content(root: Path) -> int:
         name = relative.as_posix()
         data = path.read_bytes()
         if name in ALLOWED_BINARY:
+            if path.suffix.lower() == ".mp4":
+                violations.extend(_mp4_violations(name, data))
+                continue
             try:
                 text_chunks = _png_text_chunks(data)
             except ValueError as exc:
