@@ -10,6 +10,8 @@ It is a progression journal, not another memory system and not a raw transcript 
 
 The preview and every public example use synthetic data.
 
+**[Watch the 60 second walkthrough](https://jadencreatescode.github.io/my-journal/#walkthrough)** — scope, bounded evidence, portable Markdown, backfill, and locked daily automation, in order. Built entirely from synthetic data. ([direct video link](docs/assets/my-journal-demo.mp4))
+
 ## About the creator
 
 Jaden Gibson grew up in Las Vegas, a city whose constant reinvention helped shape his curiosity about how systems work. He immersed himself in coding out of genuine interest and learned by building practical tools that connect artificial intelligence, personal knowledge, and the devices people use every day.

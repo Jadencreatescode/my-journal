@@ -71,6 +71,42 @@ class PublicContentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "textual metadata"):
                 checker.check_public_content(root)
 
+    def _mp4_box(self, kind: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I", len(payload) + 8) + kind + payload
+
+    def test_allowlisted_mp4_with_private_path_is_rejected(self):
+        checker = load_checker()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "docs/assets/my-journal-demo.mp4"
+            target.parent.mkdir(parents=True)
+            payload = self._mp4_box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2mp41")
+            payload += self._mp4_box(b"free", b"leaked path /opt/data/private secret\x00padding")
+            target.write_bytes(payload)
+            with self.assertRaisesRegex(ValueError, "private absolute VPS path in embedded metadata"):
+                checker.check_public_content(root)
+
+    def test_allowlisted_mp4_without_private_material_passes(self):
+        checker = load_checker()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "docs/assets/my-journal-demo.mp4"
+            target.parent.mkdir(parents=True)
+            payload = self._mp4_box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2mp41")
+            payload += self._mp4_box(b"free", b"Lavf60.3.100 remotion render")
+            target.write_bytes(payload)
+            self.assertEqual(checker.check_public_content(root), 1)
+
+    def test_non_allowlisted_mp4_is_still_rejected_as_unapproved(self):
+        checker = load_checker()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "docs/assets/not-allowlisted.mp4"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(self._mp4_box(b"ftyp", b"isom") + self._mp4_box(b"free", b"padding"))
+            with self.assertRaisesRegex(ValueError, "unapproved binary"):
+                checker.check_public_content(root)
+
 
 if __name__ == "__main__":
     unittest.main()
