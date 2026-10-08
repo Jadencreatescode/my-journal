@@ -8,8 +8,8 @@ import subprocess
 import tarfile
 from pathlib import Path
 
-VERSION = "0.2.0"
-PYTHON_VERSION = "0.2.0"
+VERSION = "0.2.1"
+PYTHON_VERSION = "0.2.1"
 PREFIX = f"my-journal-v{VERSION}/"
 ARCHIVE_NAME = f"my-journal-v{VERSION}.tar.gz"
 REQUIRED_STABLE_FIELDS = {
