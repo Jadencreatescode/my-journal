@@ -14,4 +14,4 @@
 1. Native Windows operation without Ubuntu WSL.
 2. Complete recovery of deleted sessions.
 3. Compatibility with arbitrary third party journal schemas.
-4. Compatibility beyond the documented `0.2.0` interfaces and file formats.
+4. Compatibility beyond the documented `0.2.1` interfaces and file formats.

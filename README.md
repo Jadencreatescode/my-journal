@@ -2,7 +2,7 @@
 
 **See how your work actually moved forward.**
 
-My Journal `0.2.0` turns Hermes conversations you explicitly approve into a validated daily record of decisions, changes, failed attempts, verification, blockers, corrections, and open work. Canonical entries are portable Markdown you can read in Obsidian, search, sync, back up, or move.
+My Journal `0.2.1` turns Hermes conversations you explicitly approve into a validated daily record of decisions, changes, failed attempts, verification, blockers, corrections, and open work. Canonical entries are portable Markdown you can read in Obsidian, search, sync, back up, or move.
 
 It is a progression journal, not another memory system and not a raw transcript export.
 
@@ -51,7 +51,7 @@ python3 scripts/demo.py --output ./my-journal-demo
 
 ## Release status
 
-Version `0.2.0` supports Linux, macOS, Ubuntu under WSL, and native Windows Hermes when Ubuntu WSL provides the restricted Journal helper. On Windows, the native Hermes installation remains the conversational owner. WSL performs only the restricted Journal filesystem and collection work.
+Version `0.2.1` supports Linux, macOS, Ubuntu under WSL, and native Windows Hermes when Ubuntu WSL provides the restricted Journal helper. On Windows, the native Hermes installation remains the conversational owner. WSL performs only the restricted Journal filesystem and collection work.
 
 Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` before enabling collection.
 
@@ -313,8 +313,8 @@ python3 -m unittest discover -s skills/note-taking/my-journal/tests -v
 The deterministic release archive is built only from a Git reference:
 
 ```text
-python3 scripts/build_release.py --ref v0.2.0 --output dist
-python3 scripts/verify_release.py --ref v0.2.0 --archive dist/my-journal-v0.2.0.tar.gz
+python3 scripts/build_release.py --ref v0.2.1 --output dist
+python3 scripts/verify_release.py --ref v0.2.1 --archive dist/my-journal-v0.2.1.tar.gz
 ```
 
 See `CONTRIBUTING.md`, `COMPATIBILITY.md`, and `CHANGELOG.md` for the complete release boundary.

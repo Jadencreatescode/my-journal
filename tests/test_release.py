@@ -35,7 +35,7 @@ def create_repo(root: Path) -> str:
     git(root, "config", "user.email", "release-tests@example.invalid")
     git(root, "config", "user.name", "Release Tests")
     required_files = {
-        "README.md": "My Journal `0.2.0` release fixture\n",
+        "README.md": "My Journal `0.2.1` release fixture\n",
         "LICENSE": "MIT\n",
         "install.py": "print('fixture')\n",
         "install-windows.ps1": "Write-Output 'fixture'\n",
@@ -47,12 +47,12 @@ def create_repo(root: Path) -> str:
         "docs/assets/my-journal-social-preview.png": (
             ROOT / "docs/assets/my-journal-social-preview.png"
         ).read_bytes(),
-        "pyproject.toml": "version = \"0.2.0\"\nrelease = \"0.2.0\"\n",
-        "SECURITY.md": "Version `0.2.0` receives security fixes.\n",
+        "pyproject.toml": "version = \"0.2.1\"\nrelease = \"0.2.1\"\n",
+        "SECURITY.md": "Version `0.2.1` receives security fixes.\n",
         "COMPATIBILITY.md": "Windows WSL bridge candidate contract.\n",
         "PRIVACY.md": "The stable release uses nonreversible references.\n",
         "THREAT_MODEL.md": "Windows operation requires the restricted WSL runtime.\n",
-        "plugins/my-journal/plugin.yaml": "version: 0.2.0\n",
+        "plugins/my-journal/plugin.yaml": "version: 0.2.1\n",
         "plugins/my-journal/__init__.py": "VALUE = 1\n",
         "plugins/my-journal/onboarding.py": "VALUE = 1\n",
         "plugins/my-journal/descriptor_exec.py": "print('descriptor fixture')\n",
@@ -63,8 +63,8 @@ def create_repo(root: Path) -> str:
         "plugins/my-journal/tests/test_runtime_hardening.py": "# runtime tests\n",
         "plugins/my-journal/tests/test_windows_bridge.py": "# bridge tests\n",
         "plugins/my-journal/tests/test_wsl_runtime.py": "# runtime tests\n",
-        "skills/note-taking/my-journal/SKILL.md": "version: 0.2.0\n# Evidence skill\n",
-        "skills/note-taking/journal/SKILL.md": "version: 0.2.0\n# Journal skill\n",
+        "skills/note-taking/my-journal/SKILL.md": "version: 0.2.1\n# Evidence skill\n",
+        "skills/note-taking/journal/SKILL.md": "version: 0.2.1\n# Journal skill\n",
     }
     for relative in load_script("verify_release").REQUIRED_RELEASE_FILES:
         if relative not in required_files:
@@ -97,12 +97,12 @@ class ReleaseToolTests(unittest.TestCase):
 
     def test_candidate_version_metadata_and_windows_bridge_support_are_synchronized(self):
         builder = load_script("build_release")
-        self.assertEqual(builder.VERSION, "0.2.0")
+        self.assertEqual(builder.VERSION, "0.2.1")
         expected = {
-            "pyproject.toml": ("version = \"0.2.0\"", "release = \"0.2.0\""),
-            "plugins/my-journal/plugin.yaml": ("version: 0.2.0", "  - windows"),
-            "skills/note-taking/journal/SKILL.md": ("version: 0.2.0",),
-            "skills/note-taking/my-journal/SKILL.md": ("version: 0.2.0", "platforms: [linux, macos, windows]"),
+            "pyproject.toml": ("version = \"0.2.1\"", "release = \"0.2.1\""),
+            "plugins/my-journal/plugin.yaml": ("version: 0.2.1", "  - windows"),
+            "skills/note-taking/journal/SKILL.md": ("version: 0.2.1",),
+            "skills/note-taking/my-journal/SKILL.md": ("version: 0.2.1", "platforms: [linux, macos, windows]"),
             ".github/workflows/ci.yml": (
                 "windows-native",
                 "windows-wsl-integration",
@@ -133,14 +133,14 @@ class ReleaseToolTests(unittest.TestCase):
                 "dist/my-journal-v0.2.0.tar.gz.commit.txt",
             ),
             "README.md": (
-                "My Journal `0.2.0`",
+                "My Journal `0.2.1`",
                 "native Windows Hermes",
                 ".\\install-windows.ps1",
                 "-Recover",
-                "--ref v0.2.0",
+                "--ref v0.2.1",
             ),
             "COMPATIBILITY.md": ("Native Windows Hermes with Ubuntu WSL",),
-            "SECURITY.md": ("`0.2.0`",),
+            "SECURITY.md": ("`0.2.1`",),
         }
         for relative, fragments in expected.items():
             content = (ROOT / relative).read_text(encoding="utf-8")
@@ -240,7 +240,7 @@ class ReleaseToolTests(unittest.TestCase):
             with tarfile.open(first, "r:gz") as opened:
                 names = [member.name for member in opened.getmembers()]
             self.assertEqual(names, sorted(names))
-            root_name = "my-journal-v0.2.0"
+            root_name = "my-journal-v0.2.1"
             self.assertTrue(
                 all(name == root_name or name.startswith(root_name + "/") for name in names)
             )

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1
+
+Removes a 24 hour scheduled-binding completion lag, raises evidence limits, strengthens note redaction, heals stale bindings automatically, and adds social preview metadata.
+
+1. Flips a scheduled daily binding to completed synchronously inside generation completion, instead of depending on a dead `post_script` scheduler hook that never actually ran, removing a roughly 24 hour lag between a note publishing and its binding showing completed.
+2. Raises manifest and packet limits for larger backfill and daily runs.
+3. Strengthens secret redaction directly inside generated canonical notes, not only inside evidence packets.
+4. Heals stale scheduled bindings automatically during the daily precollect self-check.
+5. Embeds the 60 second walkthrough video on the project site and README.
+6. Adds Open Graph and Twitter Card metadata so shared links render a preview card on Discord, Slack, and iMessage.
+
 ## 0.2.0
 
 Promotes the hardened Windows and scheduler line to the second stable release.
