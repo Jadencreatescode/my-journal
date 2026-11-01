@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Documents an interactive weekly or monthly learning review through both journal skills, with validated coverage, comparison against existing guidance, dated recommendations, explicit destinations and verification, and separately approved follow-through. Unattended generation tools and permissions are unchanged; reviews do not automatically schedule work or mutate memory.
+
 ## 0.2.1
 
 Removes a 24 hour scheduled-binding completion lag, raises evidence limits, strengthens note redaction, heals stale bindings automatically, and adds social preview metadata.

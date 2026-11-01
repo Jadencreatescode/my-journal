@@ -29,6 +29,7 @@ Use this skill when the user asks to:
 4. Generate weekly, monthly, or yearly progression summaries.
 5. Install or repair the journal automation.
 6. Mark an interaction as important, private, professional, personal, or mixed.
+7. Review a week or month for lessons, reusable abilities, skill improvements, and memory candidates.
 
 Do not use it to replace exact session search, permanent memory, project documentation, or a raw compliance archive.
 
@@ -149,6 +150,12 @@ Completion criterion: validation passes, completion state is committed, and the 
 Weekly summaries read daily notes, monthly summaries read weekly notes, and yearly summaries read monthly notes. They should not reread the entire raw session database unless repairing missing history.
 
 Completion criterion: each rollup cites its source notes and preserves unresolved open threads.
+
+### Step 7: Review learning when requested
+
+For a weekly or monthly learning review, read the [learning review procedure](references/learning-review.md). Compare validated evidence with existing skills and maintained records before proposing new ones. Separate capture, reinforcement, reconciliation, retrieval repair, and capability reuse. The default is recommendations only: a review does not authorize installing tools, starting schedules, or changing memories. Apply only the user's separately approved follow-through scope. This is an interactive review procedure, not part of the restricted unattended daily generation route, whose tools and mutation boundaries remain unchanged.
+
+Completion criterion: coverage, evidence dates, existing guidance, proposed destinations, approval boundaries, and verification status are explicit for every recommendation.
 
 ## Context Classification
 
