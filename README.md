@@ -32,6 +32,7 @@ His current work includes My Journal for Hermes, which turns approved conversati
 4. **Historical backfill that can continue.** Approved activity dates run oldest first, and interrupted evidence resumes from frozen evidence instead of being recollected.
 5. **Validated daily automation.** Required precollection freezes evidence before the scheduled agent starts. Required postvalidation and a locked execution contract prevent partial work from being reported as complete.
 6. **Portable ownership.** Canonical entries remain plain Markdown under your Hermes data root.
+7. **Learning reviews on request.** Ask `/journal review learning last month` to compare dated evidence with existing skills and records, distinguish ideas from demonstrated capabilities, and propose the smallest useful improvements. The [learning review procedure](skills/note-taking/my-journal/references/learning-review.md) is interactive and recommendation-only unless you separately approve changes; it does not schedule work or mutate memory automatically.
 
 ## Try it without private data
 

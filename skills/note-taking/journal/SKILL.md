@@ -34,6 +34,7 @@ For `/journal` or `/journal help`, show concise examples for:
 /journal open last 30 days
 /journal search laptop tunnel last 90 days
 /journal compare last week with this week
+/journal review learning last month
 /journal status
 /journal gaps last 90 days
 /journal backfill plan last 30 days
@@ -87,6 +88,12 @@ For `summarize`, `changes`, `timeline`, `project`, `decisions`, `open`, `search`
    `search` returns matching dates and grounded excerpts or concise context.
 
    `compare` reads both periods separately and reports new work, completed work, changed priorities, resolved blockers, new blockers, and changed decisions.
+
+### Learning reviews
+
+For `/journal review learning <range>` or an explicit weekly or monthly learning review request, follow the shared [learning review procedure](../my-journal/references/learning-review.md). Resolve the date window and read validated entries through the journal tools before comparing findings with existing skills and canonical records. Distinguish ideas from demonstrated capabilities and current readiness; report missing or rejected dates and cite dated evidence for every recommendation.
+
+This is an interactive skill workflow, not a new CLI command or generation tool. The default is recommendations only. It does not authorize automatic scheduling, memory mutation, tool installation, or backfill execution. Apply changes only within the user's separately approved scope; leave the restricted unattended generation tools and permissions unchanged.
 
 ### Gaps and backfill planning
 
