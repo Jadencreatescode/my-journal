@@ -23,7 +23,7 @@ from .core import (
     validate_pending_receipt,
     validated_entry_dates,
 )
-from .improvement import improvement_report, record_lesson, recurring_issues
+from .improvement import _iso_date, improvement_report, record_lesson, recurring_issues
 from .schemas import (
     IMPROVEMENT_REPORT_SCHEMA,
     LESSON_RECORD_SCHEMA,
@@ -273,9 +273,11 @@ def _recurring_range(args: dict) -> tuple[date, date]:
     if start_text is not None or end_text is not None:
         if not isinstance(start_text, str) or not isinstance(end_text, str):
             raise ValueError("start_date and end_date are both required")
-        start, end = date.fromisoformat(start_text), date.fromisoformat(end_text)
+        start, end = _iso_date(start_text, "start_date"), _iso_date(end_text, "end_date")
         if start > end:
             raise ValueError("start date must not follow end date")
+        if end > _journal_today():
+            raise ValueError("end_date must not be in the future")
         return start, end
     return resolve_date_range(
         str(range_text if range_text is not None else "last 30 days"),
@@ -317,10 +319,8 @@ def handle_improvement_report(args: dict, **kwargs) -> str:
         as_of_text = args.get("as_of")
         if as_of_text is None:
             as_of = today
-        elif not isinstance(as_of_text, str) or len(as_of_text) != 10:
-            raise ValueError("as_of must be an ISO date (YYYY-MM-DD)")
         else:
-            as_of = date.fromisoformat(as_of_text)
+            as_of = _iso_date(as_of_text, "as_of")
         return improvement_report(
             journal_root(), as_of=as_of, today=today, lesson_id=args.get("lesson_id")
         )

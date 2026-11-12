@@ -5,6 +5,8 @@ import importlib
 import importlib.util
 import json
 import os
+import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -487,6 +489,251 @@ class ImprovementReportTests(ImprovementTestCase):
         self.call("handle_improvement_report", {"as_of": "2026-07-28"})
         self.call("handle_lesson_record", {"action": "retire", "lesson_id": lesson, "retired_on": "2026-07-27"})
         self.assertEqual(self.notes_snapshot(), snapshot)
+
+
+class _FakeReader:
+    """Synthetic window reader used to exercise verdict and bound logic directly."""
+
+    def __init__(self, *, validated=None, items=None, excluded=None, adopted=None):
+        self.validated = validated or (0, 0)
+        self.items = items or []
+        self.excluded = excluded or []
+        self.adopted = adopted
+
+    def __call__(self, root):  # stands in for the _ValidatedReader class
+        return self
+
+    def window(self, start, end):
+        days = [(start + timedelta(days=offset)).isoformat() for offset in range((end - start).days + 1)]
+        if self.adopted is not None:
+            count = self.validated[0] if end < self.adopted else self.validated[1]
+            items = [item for item in self.items if start.isoformat() <= item["date"] <= end.isoformat()]
+        else:
+            count, items = len(days), self.items
+        return {
+            "validated": days[:count],
+            "missing": days[count:],
+            "excluded": self.excluded,
+            "items": items,
+            "calendar_days": len(days),
+        }
+
+
+def _item(day: str, terms: set[str]) -> dict:
+    frozen = frozenset(terms)
+    return {
+        "date": day,
+        "section": "blockers_and_failures",
+        "excerpt": " ".join(sorted(frozen)),
+        "terms": frozen,
+        "surface": [(term, term) for term in sorted(frozen)],
+    }
+
+
+class ReviewRegressionTests(ImprovementTestCase):
+    LESSON = {
+        "lesson_id": "0" * 16,
+        "title": "Clear stale cache",
+        "adopted_on": "2026-06-01",
+        "any_terms": ["stale cache"],
+        "all_terms": [],
+        "sections": ["blockers_and_failures"],
+        "source_dates": [],
+        "retired_on": None,
+    }
+
+    def adopt(self, **overrides) -> dict:
+        args = {"title": "Clear the build cache", "adopted_on": "2026-07-15", "any_terms": ["stale cache"]}
+        args.update(overrides)
+        return self.call("handle_lesson_record", args)
+
+    # S1
+    def test_issue_never_seen_before_adoption_is_not_reported_as_improvement(self):
+        report = self.improvement._lesson_report(
+            _FakeReader(validated=(7, 7), adopted=date(2026, 6, 1)), self.LESSON, date(2026, 11, 12)
+        )
+        self.assertEqual(report["verdict"], "no baseline occurrences")
+        self.assertIn("cannot be assessed", report["verdict_reason"])
+        later = _FakeReader(validated=(30, 30), adopted=date(2026, 6, 1), items=[_item("2026-06-10", set(self.improvement.significant_terms("stale cache")))])
+        report = self.improvement._lesson_report(later, self.LESSON, date(2026, 6, 30))
+        self.assertEqual(report["windows"]["before"]["matching_date_count"], 0)
+        self.assertEqual(report["verdict"], "no baseline occurrences")
+        thin = self.improvement._lesson_report(
+            _FakeReader(validated=(6, 30), adopted=date(2026, 6, 1)), self.LESSON, date(2026, 11, 12)
+        )
+        self.assertEqual(thin["verdict"], "insufficient evidence")
+        seen = _FakeReader(validated=(30, 30), adopted=date(2026, 6, 1), items=[_item("2026-05-20", set(self.improvement.significant_terms("stale cache")))])
+        self.assertEqual(
+            self.improvement._lesson_report(seen, self.LESSON, date(2026, 6, 30))["verdict"],
+            "no recurrence observed since adoption",
+        )
+
+    # S2
+    def test_fifo_ledger_is_refused_without_blocking(self):
+        directory = self.root / "improvements"
+        directory.mkdir()
+        os.mkfifo(directory / "lessons.jsonl")
+        code = (
+            "import importlib.util, json, sys\n"
+            "sys.dont_write_bytecode = True\n"
+            f"spec = importlib.util.spec_from_file_location('fifo_probe', {str(ROOT / '__init__.py')!r}, "
+            f"submodule_search_locations=[{str(ROOT)!r}])\n"
+            "module = importlib.util.module_from_spec(spec); sys.modules['fifo_probe'] = module\n"
+            "spec.loader.exec_module(module)\n"
+            "tools = sys.modules['fifo_probe.tools']\n"
+            "report = json.loads(tools.handle_improvement_report({'as_of': '2026-07-01'}))\n"
+            "record = json.loads(tools.handle_lesson_record({'title': 'Fifo lesson', 'adopted_on': '2026-07-01', "
+            "'any_terms': ['stale cache']}))\n"
+            "print(json.dumps([report, record]))\n"
+        )
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-B", "-c", code], capture_output=True, text=True, timeout=30, env=env
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("a FIFO at the ledger path blocked the report or the writer")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report, record = json.loads(completed.stdout)
+        self.assertIn("error", report)
+        self.assertIn("error", record)
+        self.assertTrue(stat.S_ISFIFO(os.lstat(directory / "lessons.jsonl").st_mode))
+
+    # M1
+    def test_non_list_source_dates_are_refused(self):
+        for value in ("", {}, 0, False, "2026-07-01", {"2026-07-01": 1}):
+            with self.subTest(value=value):
+                self.assertIn("error", self.adopt(source_dates=value))
+        self.assertFalse((self.root / "improvements" / "lessons.jsonl").exists())
+        self.assertTrue(self.adopt(source_dates=None)["ok"])
+        self.assertTrue(self.adopt(title="Second lesson")["ok"])
+
+    # M2
+    def test_strict_iso_dates_future_end_and_control_characters_are_refused(self):
+        future = (date.today() + timedelta(days=30)).isoformat()
+        refused = (
+            ("handle_recurring_issues", {"start_date": "20260701", "end_date": "20260703"}),
+            ("handle_recurring_issues", {"start_date": "2026-07-01", "end_date": "2026-W27-5"}),
+            ("handle_recurring_issues", {"start_date": "2026-07-01", "end_date": future}),
+            ("handle_improvement_report", {"as_of": "2026-W27-1"}),
+            ("handle_improvement_report", {"as_of": "20260701"}),
+        )
+        for handler, args in refused:
+            with self.subTest(handler=handler, args=args):
+                self.assertIn("error", self.call(handler, args))
+        for overrides in (
+            {"adopted_on": "20260701"},
+            {"adopted_on": "2026-W27-1"},
+            {"title": "Fix \u202ecache"},
+            {"title": "Fix\u200bcache"},
+            {"title": "Bell \x07 title"},
+            {"any_terms": ["stale \u2066cache"]},
+            {"all_terms": ["deploy\x1b"]},
+        ):
+            with self.subTest(overrides=overrides):
+                self.assertIn("error", self.adopt(**overrides))
+        ok = self.call("handle_recurring_issues", {"start_date": "2026-07-01", "end_date": "2026-07-03"})
+        self.assertNotIn("error", ok)
+        self.assertTrue(self.adopt(title="Tab\tand newline\nare whitespace")["ok"])
+
+    # M3
+    def test_grouping_index_matches_reference_and_item_count_is_bounded(self):
+        import random
+
+        rng = random.Random(1234)
+        vocabulary = [f"w{index}" for index in range(30)]
+        items = [
+            _item((date(2026, 1, 1) + timedelta(days=index // 5)).isoformat(), set(rng.sample(vocabulary, rng.randint(1, 5))))
+            for index in range(600)
+        ]
+
+        def reference(values):
+            seeds, members = [], []
+            for item in values:
+                best_index, best_score = None, -1.0
+                for index, seed in enumerate(seeds):
+                    if not self.improvement._similar(seed, item["terms"]):
+                        continue
+                    score = self.improvement.jaccard(seed, item["terms"])
+                    if score > best_score:
+                        best_index, best_score = index, score
+                if best_index is None:
+                    seeds.append(item["terms"])
+                    members.append([item])
+                else:
+                    members[best_index].append(item)
+            return members
+
+        to_ids = lambda groups: [[id(item) for item in group] for group in groups]  # noqa: E731
+        self.assertEqual(to_ids(self.improvement._cluster(items)), to_ids(reference(items)))
+
+        limit = self.improvement.MAX_ITEMS
+        self.assertLessEqual(limit, 5000)
+        dissimilar = [
+            _item((date(2026, 1, 1) + timedelta(days=index % 366)).isoformat(), {f"a{index}x", f"b{index}y", f"c{index}z"})
+            for index in range(limit + 500)
+        ]
+        dissimilar.sort(key=lambda item: item["date"])
+        with mock.patch.object(self.improvement, "_ValidatedReader", _FakeReader(items=dissimilar)):
+            started = time.perf_counter()
+            result = self.improvement.recurring_issues(self.root, date(2026, 1, 1), date(2026, 12, 31))
+            elapsed = time.perf_counter() - started
+        self.assertEqual(result["item_count"], limit)
+        self.assertTrue(result["items_truncated"])
+        self.assertEqual(result["max_items"], limit)
+        self.assertLess(elapsed, 10.0)
+
+    # M4
+    def test_excluded_dates_and_errors_are_bounded_with_flag(self):
+        excluded = [
+            {"date": (date(2026, 1, 1) + timedelta(days=index)).isoformat(), "errors": ["e" * 500] * 5}
+            for index in range(366)
+        ]
+        with mock.patch.object(self.improvement, "_ValidatedReader", _FakeReader(excluded=excluded)):
+            result = self.improvement.recurring_issues(self.root, date(2026, 1, 1), date(2026, 12, 31))
+        coverage = result["coverage"]
+        self.assertEqual(coverage["excluded_count"], 366)
+        self.assertTrue(coverage["excluded_truncated"])
+        self.assertEqual(len(coverage["excluded"]), self.improvement.MAX_EXCLUDED_LISTED)
+        for entry in coverage["excluded"]:
+            self.assertLessEqual(len(entry["errors"]), self.improvement.MAX_EXCLUDED_ERRORS)
+            self.assertTrue(all(len(error) <= self.improvement.MAX_EXCLUDED_ERROR_CHARS for error in entry["errors"]))
+        self.assertLess(len(json.dumps(coverage["excluded"])), 40_000)
+        with mock.patch.object(self.improvement, "_ValidatedReader", _FakeReader(excluded=excluded[:2])):
+            small = self.improvement.recurring_issues(self.root, date(2026, 1, 1), date(2026, 1, 31))
+        self.assertEqual(len(small["coverage"]["excluded"]), 2)
+        self.assertTrue(small["coverage"]["excluded_truncated"])  # error strings were shortened
+
+    # M5
+    def test_purge_removes_improvements_directory(self):
+        self.assertTrue(self.adopt()["ok"])
+        self.assertTrue((self.root / "improvements" / "lessons.jsonl").is_file())
+        operations = sys.modules[f"{self.plugin.__name__}.operations"]
+        self.assertIn("improvements", operations.PURGE_DIRECTORIES)
+        self.assertIn("improvements", operations.purge()["candidates"])
+        self.assertTrue((self.root / "improvements").exists())
+        result = operations.purge("DELETE MY JOURNAL DATA", apply=True)
+        self.assertIn("improvements", result["removed"])
+        self.assertFalse((self.root / "improvements").exists())
+
+    def test_durable_append_is_reported_as_success_when_verification_read_differs(self):
+        original = self.improvement._read_ledger_text
+        calls = []
+
+        def flaky_read(root):
+            calls.append(root)
+            if len(calls) == 2:
+                raise ValueError("lesson ledger path is unsafe")
+            return original(root)
+
+        with mock.patch.object(self.improvement, "_read_ledger_text", side_effect=flaky_read):
+            result = self.adopt()
+        self.assertTrue(result.get("ok"), result)
+        self.assertIn("warning", result)
+        self.assertEqual(len((self.root / "improvements" / "lessons.jsonl").read_text().splitlines()), 1)
+        clean = self.adopt(title="Clean append")
+        self.assertTrue(clean["ok"])
+        self.assertNotIn("warning", clean)
 
 
 class RegistrationTests(ImprovementTestCase):

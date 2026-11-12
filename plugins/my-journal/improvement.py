@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -53,7 +54,14 @@ DEFAULT_MAX_CITATIONS = 10
 MAX_CITATIONS = 25
 MAX_RANGE_DAYS = 366
 MAX_EXCERPT_CHARS = 240
-MAX_ITEMS = 20_000
+# Grouping cost bound: at most MAX_ITEMS issue items are grouped per call
+# (earliest first); later items are dropped and items_truncated is set.
+MAX_ITEMS = 5_000
+# Excluded date details: at most MAX_EXCLUDED_LISTED dates, each with at most
+# MAX_EXCLUDED_ERRORS errors of MAX_EXCLUDED_ERROR_CHARS characters.
+MAX_EXCLUDED_LISTED = 31
+MAX_EXCLUDED_ERRORS = 3
+MAX_EXCLUDED_ERROR_CHARS = 200
 MAX_LABEL_TERMS = 5
 
 # Improvement tracking windows.
@@ -302,7 +310,20 @@ class _ValidatedReader:
         }
 
 
+def _bounded_excluded(excluded: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    truncated = len(excluded) > MAX_EXCLUDED_LISTED
+    listed: list[dict[str, Any]] = []
+    for entry in excluded[:MAX_EXCLUDED_LISTED]:
+        errors = [str(error) for error in entry.get("errors") or []]
+        kept = errors[:MAX_EXCLUDED_ERRORS]
+        if len(errors) > MAX_EXCLUDED_ERRORS or any(len(error) > MAX_EXCLUDED_ERROR_CHARS for error in kept):
+            truncated = True
+        listed.append({"date": entry["date"], "errors": [error[:MAX_EXCLUDED_ERROR_CHARS] for error in kept]})
+    return listed, truncated
+
+
 def _coverage(window: dict[str, Any]) -> dict[str, Any]:
+    excluded, excluded_truncated = _bounded_excluded(window["excluded"])
     return {
         "calendar_days": window["calendar_days"],
         "validated_count": len(window["validated"]),
@@ -310,7 +331,8 @@ def _coverage(window: dict[str, Any]) -> dict[str, Any]:
         "missing_count": len(window["missing"]),
         "missing_dates": window["missing"],
         "excluded_count": len(window["excluded"]),
-        "excluded": window["excluded"],
+        "excluded": excluded,
+        "excluded_truncated": excluded_truncated,
     }
 
 
@@ -355,6 +377,41 @@ def _label(group_items: list[dict[str, Any]]) -> tuple[str, list[str]]:
     return " ".join(sorted(words)), sorted(chosen)
 
 
+def _cluster(items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Deterministic leader clustering.
+
+    Items arrive in (date, section, position) order; each joins the earliest most
+    similar group seed, else starts a group. Similar seeds always share a term,
+    so only seeds found through the term index are compared, in seed order,
+    which gives exactly the same groups as comparing every seed.
+    """
+    seeds: list[frozenset[str]] = []
+    members: list[list[dict[str, Any]]] = []
+    postings: dict[str, list[int]] = {}
+    for item in items:
+        terms = item["terms"]
+        candidates: set[int] = set()
+        for term in terms:
+            candidates.update(postings.get(term, ()))
+        best_index: int | None = None
+        best_score = -1.0
+        for index in sorted(candidates):
+            seed = seeds[index]
+            if not _similar(seed, terms):
+                continue
+            score = jaccard(seed, terms)
+            if score > best_score:
+                best_index, best_score = index, score
+        if best_index is None:
+            for term in terms:
+                postings.setdefault(term, []).append(len(seeds))
+            seeds.append(terms)
+            members.append([item])
+        else:
+            members[best_index].append(item)
+    return members
+
+
 def recurring_issues(
     root: Path,
     start: date,
@@ -377,24 +434,7 @@ def recurring_issues(
     items_truncated = len(items) > MAX_ITEMS
     items = items[:MAX_ITEMS]
 
-    # Deterministic leader clustering: items arrive in (date, section, position)
-    # order; each joins the earliest most similar group seed, else starts a group.
-    seeds: list[frozenset[str]] = []
-    members: list[list[dict[str, Any]]] = []
-    for item in items:
-        best_index: int | None = None
-        best_score = -1.0
-        for index, seed in enumerate(seeds):
-            if not _similar(seed, item["terms"]):
-                continue
-            score = jaccard(seed, item["terms"])
-            if score > best_score:
-                best_index, best_score = index, score
-        if best_index is None:
-            seeds.append(item["terms"])
-            members.append([item])
-        else:
-            members[best_index].append(item)
+    members = _cluster(items)
 
     candidates: list[dict[str, Any]] = []
     for group_items in members:
@@ -432,6 +472,7 @@ def recurring_issues(
         "coverage": _coverage(window),
         "item_count": len(items),
         "items_truncated": items_truncated,
+        "max_items": MAX_ITEMS,
         "candidate_group_count": len(candidates),
         "groups": candidates[:group_limit],
         "groups_truncated": len(candidates) > group_limit,
@@ -458,6 +499,13 @@ def _iso_date(value: Any, name: str) -> date:
     return parsed
 
 
+def _is_forbidden_char(char: str) -> bool:
+    """Control, format (including bidirectional overrides), and surrogate code points."""
+    if char in "\t\n\r":
+        return False  # ordinary whitespace, collapsed to single spaces below
+    return unicodedata.category(char) in {"Cc", "Cf", "Cs"}
+
+
 def _clean_text(value: Any, name: str, maximum: int, *, required: bool = True) -> str:
     if value is None and not required:
         return ""
@@ -466,7 +514,7 @@ def _clean_text(value: Any, name: str, maximum: int, *, required: bool = True) -
     cleaned = " ".join(value.split())
     if required and not cleaned:
         raise ValueError(f"{name} must be nonempty")
-    if len(cleaned) > maximum or any(ord(char) < 32 for char in value if char not in "\t\n\r"):
+    if len(cleaned) > maximum or any(_is_forbidden_char(char) for char in value):
         raise ValueError(f"{name} is malformed or exceeds {maximum} characters")
     return cleaned
 
@@ -616,7 +664,9 @@ def _adopt_record(args: dict[str, Any], today: date, now: datetime | None) -> di
     if not isinstance(sections, list) or not sections or any(item not in _SECTION_KEYS for item in sections):
         raise ValueError(f"sections must be a nonempty subset of {', '.join(_SECTION_KEYS)}")
     sections = [key for key in _SECTION_KEYS if key in sections]
-    sources = args.get("source_dates") or []
+    sources = args.get("source_dates")
+    if sources is None:
+        sources = []
     if not isinstance(sources, list) or len(sources) > MAX_SOURCE_DATES:
         raise ValueError(f"source_dates must be a list of at most {MAX_SOURCE_DATES} dates")
     parsed_sources = sorted({_iso_date(item, "source_dates") for item in sources})
@@ -677,6 +727,7 @@ def record_lesson(
     else:
         raise ValueError("action must be adopt or retire")
     line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    warning: str | None = None
     checked = _checked_root(root)
     directory = checked / LEDGER_DIRECTORY
     if directory.is_symlink():
@@ -705,13 +756,18 @@ def record_lesson(
         if existing.count("\n") + 1 > MAX_LEDGER_RECORDS:
             raise ValueError("lesson ledger would exceed its record ceiling")
         _safe_files.safe_atomic_write_text(checked, ledger_path(checked), existing + line)
-        if not _read_ledger_text(checked).startswith(existing):
-            raise ValueError("lesson ledger changed during append")
+        # The append is durable at this point; a failed verification read must
+        # not be reported as a failed write, so it becomes a warning instead.
+        try:
+            if not _read_ledger_text(checked).startswith(existing + line):
+                warning = "the record was written durably, but the ledger changed outside the lock; review lessons.jsonl"
+        except ValueError:
+            warning = "the record was written durably, but the verification read failed; review lessons.jsonl"
     finally:
         if fcntl is not None:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
-    return {
+    result = {
         "ok": True,
         "event": record["event"],
         "lesson_id": record["lesson_id"],
@@ -719,6 +775,9 @@ def record_lesson(
         "ledger_path": str(ledger_path(checked)),
         "notice": "Lesson recorded in the append only ledger. Notes, memory, and agent behavior were not changed.",
     }
+    if warning is not None:
+        result["warning"] = warning
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +859,12 @@ def _lesson_report(reader: _ValidatedReader, lesson: dict[str, Any], as_of: date
         reason = (
             f"each window needs at least {MIN_VALIDATED_DATES} validated dates; "
             f"before has {b_valid}, since has {s_valid}"
+        )
+    elif b_dates == 0:
+        verdict = "no baseline occurrences"
+        reason = (
+            f"no validated date before adoption matched (0 of {b_valid}), so improvement cannot be assessed; "
+            f"{s_dates} of {s_valid} validated dates matched since adoption"
         )
     elif s_dates == 0:
         verdict = "no recurrence observed since adoption"
