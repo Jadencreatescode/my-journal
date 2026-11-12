@@ -17,6 +17,9 @@ The plugin registers these model tools:
 * `journal_daily_workload_approve`
 * `journal_setup_plan`
 * `journal_setup_approve`
+* `journal_recurring_issues` (read only)
+* `journal_lesson_record` (appends to the lesson ledger only)
+* `journal_improvement_report` (read only)
 
 Read tools use the `journal` toolset. Unattended generation uses a separate `my-journal-generation` toolset containing only:
 
@@ -35,6 +38,8 @@ hermes journal status
 hermes journal gaps [range]
 hermes journal backfill-plan <range>
 hermes journal resolve-range <range>
+hermes journal recurring [range] [--min-dates N] [--max-groups N]
+hermes journal improvements [--lesson-id ID] [--as-of YYYY-MM-DD]
 hermes journal generate <date>
 hermes journal backfill <range>
 hermes journal setup-inventory
@@ -75,6 +80,8 @@ Generation collects once or resumes the same immutable packet plan, requires a b
 
 Validated note text is capped at 200,000 characters per request. Accepted and rejected record metadata, status entries, and calendar gap lists are independently capped and report when truncation occurred.
 
+`journal_recurring_issues` and `journal_improvement_report` read only fully validated entries, list unvalidated or tampered dates as excluded, and never write. `journal_lesson_record` is the only writer among them: it appends one adopt or retire event to `improvements/lessons.jsonl` through descriptor anchored atomic replacement under a directory lock, refuses duplicates, future or invalid dates (dates must be strict `YYYY-MM-DD`), malformed or oversized input (including non list `source_dates` and titles or terms with control or bidirectional format characters), and symlinked or non regular ledger paths such as FIFOs, which are refused without blocking, and fails closed on a malformed ledger. A durable append whose verification read differs is reported as `ok` with a `warning`. Recurring issue grouping processes at most 5,000 items per call and lists at most 31 excluded dates with bounded errors, each with a truncation flag. Improvement verdicts are `insufficient evidence` (fewer than 7 validated dates in a window), `no baseline occurrences` (nothing matched before adoption, so improvement cannot be assessed), `no recurrence observed since adoption`, `reduced`, or `not improved`. None of these tools belong to the `my-journal-generation` toolset. Purge removes the `improvements` directory with other journal data.
+
 Journal notes, evidence manifests, and digests must remain inside their configured journal root. Symlinked notes that resolve outside the notes directory are ignored.
 
 ## Honest limitations
@@ -86,6 +93,8 @@ A backfill plan is read only. Executable backfill is a separate command and star
 Guided first use inventories profile and platform labels without message bodies, then requires explicit allowlists and privacy choices. Its immutable plan discovers eligible activity dates from retained conversation timestamps. Persistent memory is not a chronological source and does not choose the start date.
 
 The normal database tier is 8 GiB. Larger databases require an explicit profile bound 16 GiB or 32 GiB approval before SQLite opens. The immutable setup plan selects the smallest sufficient daily message tier from 25,000, 50,000, and 100,000. If a later date exceeds its approved tier, collection stops before launch and returns the exact next targeted approval phrase. The triggering date authorizes a global reusable daily tier; targeted means no scope, privacy, database, or unrelated resource limit changes. Neither boundary increases silently.
+
+Recurring issue grouping is lexical. Paraphrases with few shared words may stay separate, and unrelated items that share vocabulary may merge. Improvement verdicts compare recorded frequencies and cannot establish cause.
 
 Evidence validation proves source coverage and provenance. It cannot guarantee that every sentence in a model written summary is the best possible interpretation.
 

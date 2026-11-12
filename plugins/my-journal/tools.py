@@ -23,6 +23,12 @@ from .core import (
     validate_pending_receipt,
     validated_entry_dates,
 )
+from .improvement import _iso_date, improvement_report, record_lesson, recurring_issues
+from .schemas import (
+    IMPROVEMENT_REPORT_SCHEMA,
+    LESSON_RECORD_SCHEMA,
+    RECURRING_ISSUES_SCHEMA,
+)
 from .onboarding import (
     approve_database_size,
     approve_daily_workload,
@@ -252,6 +258,73 @@ def handle_find_gaps(args: dict, **kwargs) -> str:
 
 def handle_plan_backfill(args: dict, **kwargs) -> str:
     return _result(_missing_days, str(args.get("range", "")))
+
+
+def _journal_today():
+    return resolve_date_range("today", timezone_name=journal_timezone())[0]
+
+
+def _recurring_range(args: dict) -> tuple[date, date]:
+    range_text = args.get("range")
+    start_text = args.get("start_date")
+    end_text = args.get("end_date")
+    if range_text is not None and (start_text is not None or end_text is not None):
+        raise ValueError("use either range or start_date and end_date, not both")
+    if start_text is not None or end_text is not None:
+        if not isinstance(start_text, str) or not isinstance(end_text, str):
+            raise ValueError("start_date and end_date are both required")
+        start, end = _iso_date(start_text, "start_date"), _iso_date(end_text, "end_date")
+        if start > end:
+            raise ValueError("start date must not follow end date")
+        if end > _journal_today():
+            raise ValueError("end_date must not be in the future")
+        return start, end
+    return resolve_date_range(
+        str(range_text if range_text is not None else "last 30 days"),
+        timezone_name=journal_timezone(),
+    )
+
+
+def handle_recurring_issues(args: dict, **kwargs) -> str:
+    def run():
+        if not isinstance(args, dict):
+            raise ValueError("arguments must be an object")
+        unexpected = sorted(set(args) - set(RECURRING_ISSUES_SCHEMA["parameters"]["properties"]))
+        if unexpected:
+            raise ValueError(f"unexpected arguments: {', '.join(unexpected)}")
+        start, end = _recurring_range(args)
+        return recurring_issues(
+            journal_root(),
+            start,
+            end,
+            min_dates=args.get("min_dates"),
+            max_groups=args.get("max_groups"),
+            max_citations=args.get("max_citations"),
+        )
+    return _result(run)
+
+
+def handle_lesson_record(args: dict, **kwargs) -> str:
+    return _result(lambda: record_lesson(journal_root(), args, today=_journal_today()))
+
+
+def handle_improvement_report(args: dict, **kwargs) -> str:
+    def run():
+        if not isinstance(args, dict):
+            raise ValueError("arguments must be an object")
+        unexpected = sorted(set(args) - {"lesson_id", "as_of"})
+        if unexpected:
+            raise ValueError(f"unexpected arguments: {', '.join(unexpected)}")
+        today = _journal_today()
+        as_of_text = args.get("as_of")
+        if as_of_text is None:
+            as_of = today
+        else:
+            as_of = _iso_date(as_of_text, "as_of")
+        return improvement_report(
+            journal_root(), as_of=as_of, today=today, lesson_id=args.get("lesson_id")
+        )
+    return _result(run)
 
 
 def handle_setup_inventory(args: dict, **kwargs) -> str:

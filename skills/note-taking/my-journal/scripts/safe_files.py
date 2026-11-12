@@ -12,6 +12,9 @@ from pathlib import Path
 
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 _FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+# O_NONBLOCK makes opening a FIFO or device return at once so the regular file
+# check below can refuse it; it has no effect on reads from regular files.
+_READ_FILE_FLAGS = _FILE_FLAGS | getattr(os, "O_NONBLOCK", 0)
 
 
 def canonical_descriptor_path(path: Path) -> Path:
@@ -233,7 +236,7 @@ def safe_read_text(root: Path, target: Path, *, max_bytes: int) -> str:
     file_descriptor: int | None = None
     try:
         parent_descriptor, name = _open_parent(root, target)
-        file_descriptor = os.open(name, _FILE_FLAGS, dir_fd=parent_descriptor)
+        file_descriptor = os.open(name, _READ_FILE_FLAGS, dir_fd=parent_descriptor)
         metadata = os.fstat(file_descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("target is not a regular file")

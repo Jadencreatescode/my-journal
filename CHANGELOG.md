@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+Adds deterministic recurring issue alerts and user approved improvement tracking.
+
+1. Adds the read only `journal_recurring_issues` tool and `hermes journal recurring` command. It groups similar Blockers and Failures and Corrections and Preference Changes items from validated entries using normalized term sets and Jaccard similarity, and reports candidate recurring issues with dated citations, coverage, and truncation flags.
+2. Adds `journal_lesson_record`, which appends user approved lesson adoption and retirement events to `improvements/lessons.jsonl` in the journal root through descriptor anchored primitives. Duplicate, future dated, malformed, oversized, and symlinked ledger input is refused.
+3. Adds the read only `journal_improvement_report` tool and `hermes journal improvements` command. It compares matching items in equal windows before and since adoption (capped at 90 days, at least 7 validated dates per window) and states that results show correlation, not proof of cause.
+4. Maps all three tools through the native Windows to WSL bridge. The `my-journal-generation` toolset is unchanged.
+5. Includes the `improvements` directory in purge.
+6. Review hardening: the improvement report returns `no baseline occurrences` instead of `no recurrence observed since adoption` when the issue never matched before adoption; ledger reads open non blocking and refuse FIFOs and other non regular files instead of hanging (shared `safe_read_text` now opens with `O_NONBLOCK`); non list `source_dates`, non strict ISO dates, future `end_date`, and titles or terms with control or format characters are refused; grouping uses a term index and processes at most 5,000 items per call; excluded date details are capped with an `excluded_truncated` flag; a durable append whose verification read differs returns `ok` with a `warning`.
+
 ## 0.2.1
 
 Removes a 24 hour scheduled-binding completion lag, raises evidence limits, strengthens note redaction, heals stale bindings automatically, and adds social preview metadata.

@@ -9,7 +9,9 @@ from .tools import (
     handle_daily_workload_approve,
     handle_daily_workload_check,
     handle_find_gaps,
+    handle_improvement_report,
     handle_plan_backfill,
+    handle_recurring_issues,
     handle_resolve_range,
     handle_setup_approve,
     handle_setup_database_approve,
@@ -38,6 +40,13 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     plan.add_argument("range")
     resolve = subs.add_parser("resolve-range", help="Resolve a natural date range")
     resolve.add_argument("range")
+    recurring = subs.add_parser("recurring", help="List candidate recurring issues from validated entries without writing")
+    recurring.add_argument("range", nargs="?", default="last 30 days")
+    recurring.add_argument("--min-dates", type=int)
+    recurring.add_argument("--max-groups", type=int)
+    improvements = subs.add_parser("improvements", help="Compare recorded lessons before and since adoption without writing")
+    improvements.add_argument("--lesson-id")
+    improvements.add_argument("--as-of")
     generate = subs.add_parser("generate", help="Generate and validate one journal date")
     generate.add_argument("date")
     backfill = subs.add_parser("backfill", help="Execute a complete historical backfill")
@@ -93,6 +102,19 @@ def journal_command(args: argparse.Namespace) -> int:
         output = handle_plan_backfill({"range": args.range})
     elif command == "resolve-range":
         output = handle_resolve_range({"range": args.range})
+    elif command == "recurring":
+        payload = {"range": args.range}
+        if args.min_dates is not None:
+            payload["min_dates"] = args.min_dates
+        if args.max_groups is not None:
+            payload["max_groups"] = args.max_groups
+        output = handle_recurring_issues(payload)
+    elif command == "improvements":
+        output = handle_improvement_report({
+            key: value
+            for key, value in (("lesson_id", args.lesson_id), ("as_of", args.as_of))
+            if value is not None
+        })
     elif command == "generate":
         output = json.dumps(
             run_generation(

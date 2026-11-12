@@ -37,6 +37,7 @@ REQUIRED_RELEASE_FILES = {
     "plugins/my-journal/cli.py",
     "plugins/my-journal/core.py",
     "plugins/my-journal/descriptor_exec.py",
+    "plugins/my-journal/improvement.py",
     "plugins/my-journal/onboarding.py",
     "plugins/my-journal/operations.py",
     "plugins/my-journal/schemas.py",

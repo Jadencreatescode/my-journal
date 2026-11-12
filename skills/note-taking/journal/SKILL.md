@@ -94,6 +94,12 @@ For `/journal gaps <range>`, call `journal_find_gaps`. Explain that these are mi
 
 For `/journal backfill plan <range>`, call `journal_plan_backfill`. This is read only. Report existing and missing note counts and the exact candidate dates. Do not start collection without a separate explicit instruction.
 
+### Recurring issues and lessons
+
+For `/journal recurring <range>`, call `journal_recurring_issues`. Present the groups as candidate recurring issues for review, with their dates and citations, and report validated, missing, and excluded dates. Do not record anything automatically.
+
+When the user explicitly approves a lesson, call `journal_lesson_record` with the exact approved title, adoption date, and match terms. For `/journal improvements`, call `journal_improvement_report` and always say the result shows correlation over the recorded period, not proof of cause. Never change memory, skills, or behavior as a side effect.
+
 ### Generation and executable backfill
 
 For `/journal generate <date>`, invoke the scriptable `hermes journal generate <date>` route. That route creates a child Hermes process pinned to the `my-journal-generation` toolset and the `my-journal` skill. Do not attempt generation in the conversational journal agent, do not expose packet text to its broader retrieval tools, and do not count the child response as success unless the canonical date passes `validated_entry_dates`.

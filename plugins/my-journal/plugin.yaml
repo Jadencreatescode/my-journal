@@ -19,6 +19,9 @@ provides_tools:
   - journal_daily_workload_approve
   - journal_setup_plan
   - journal_setup_approve
+  - journal_recurring_issues
+  - journal_lesson_record
+  - journal_improvement_report
   - journal_generation_collect
   - journal_generation_resume
   - journal_generation_get_chunk

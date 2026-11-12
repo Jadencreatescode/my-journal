@@ -195,6 +195,56 @@ GENERATION_COMPLETE_SCHEMA = {
         "additionalProperties": False,
     },
 }
+_ISSUE_SECTION_KEYS = ["blockers_and_failures", "corrections_and_preference_changes"]
+_ISO_DATE_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+RECURRING_ISSUES_SCHEMA = {
+    "name": "journal_recurring_issues",
+    "description": "Read only. Group similar Blockers and Failures and Corrections items from validated journal entries and report candidate recurring issues for review, with citations and coverage. Never writes.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "range": {"type": "string", "minLength": 1, "maxLength": 200},
+            "start_date": {"type": "string", "pattern": _ISO_DATE_PATTERN},
+            "end_date": {"type": "string", "pattern": _ISO_DATE_PATTERN},
+            "min_dates": {"type": "integer", "minimum": 2, "maximum": 366},
+            "max_groups": {"type": "integer", "minimum": 1, "maximum": 50},
+            "max_citations": {"type": "integer", "minimum": 1, "maximum": 25},
+        },
+        "additionalProperties": False,
+    },
+}
+LESSON_RECORD_SCHEMA = {
+    "name": "journal_lesson_record",
+    "description": "Append one user approved lesson adoption or retirement event to the private lesson ledger. Only call after the user explicitly approves the exact lesson. Never edits notes, memory, or behavior.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["adopt", "retire"]},
+            "title": {"type": "string", "minLength": 1, "maxLength": 200},
+            "adopted_on": {"type": "string", "pattern": _ISO_DATE_PATTERN},
+            "any_terms": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 80}, "minItems": 1, "maxItems": 20},
+            "all_terms": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 80}, "maxItems": 20},
+            "sections": {"type": "array", "items": {"type": "string", "enum": _ISSUE_SECTION_KEYS}, "minItems": 1, "maxItems": 2, "uniqueItems": True},
+            "source_dates": {"type": "array", "items": {"type": "string", "pattern": _ISO_DATE_PATTERN}, "maxItems": 50},
+            "lesson_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+            "retired_on": {"type": "string", "pattern": _ISO_DATE_PATTERN},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 500},
+        },
+        "additionalProperties": False,
+    },
+}
+IMPROVEMENT_REPORT_SCHEMA = {
+    "name": "journal_improvement_report",
+    "description": "Read only. For recorded lessons, compare matching issue items on validated entries in equal windows before and since adoption. Reports correlation, not proof of cause.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "lesson_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+            "as_of": {"type": "string", "pattern": _ISO_DATE_PATTERN},
+        },
+        "additionalProperties": False,
+    },
+}
 GENERATION_TOOL_NAMES = (
     "journal_generation_collect",
     "journal_generation_resume",

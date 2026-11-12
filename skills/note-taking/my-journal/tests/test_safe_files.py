@@ -390,6 +390,32 @@ class SafeFileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symlink|regular file"):
                 module.safe_read_text(root, target, max_bytes=1024)
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFOs require POSIX")
+    def test_read_refuses_fifo_without_blocking(self):
+        import threading
+
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "journal"
+            root.mkdir()
+            target = root / "entry.txt"
+            os.mkfifo(target)
+            outcome: list[BaseException | str] = []
+
+            def read() -> None:
+                try:
+                    outcome.append(module.safe_read_text(root, target, max_bytes=1024))
+                except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+                    outcome.append(exc)
+
+            worker = threading.Thread(target=read, daemon=True)
+            worker.start()
+            worker.join(10)
+            self.assertFalse(worker.is_alive(), "safe_read_text blocked on a FIFO")
+            self.assertEqual(len(outcome), 1)
+            self.assertIsInstance(outcome[0], ValueError)
+            self.assertIn("regular file", str(outcome[0]))
+
 
 if __name__ == "__main__":
     unittest.main()
