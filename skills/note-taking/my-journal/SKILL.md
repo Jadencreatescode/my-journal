@@ -29,6 +29,7 @@ Use this skill when the user asks to:
 4. Generate weekly, monthly, or yearly progression summaries.
 5. Install or repair the journal automation.
 6. Mark an interaction as important, private, professional, personal, or mixed.
+7. Spot issues that keep recurring, or check whether a lesson the user adopted coincided with fewer recurrences.
 
 Do not use it to replace exact session search, permanent memory, project documentation, or a raw compliance archive.
 
@@ -149,6 +150,18 @@ Completion criterion: validation passes, completion state is committed, and the 
 Weekly summaries read daily notes, monthly summaries read weekly notes, and yearly summaries read monthly notes. They should not reread the entire raw session database unless repairing missing history.
 
 Completion criterion: each rollup cites its source notes and preserves unresolved open threads.
+
+### Step 7: Review recurring issues and adopted lessons
+
+These interactive tools are deterministic and make no model calls. They read only entries that pass full canonical validation; unvalidated or tampered notes are skipped and listed as excluded. They never modify notes.
+
+1. `journal_recurring_issues` (read only) scans list items in `Blockers and Failures` and `Corrections and Preference Changes` for a date range of at most 366 days. It ignores placeholders such as `None`, normalizes text (lowercase, punctuation and stopwords removed, light suffix stemming), and groups items whose significant term sets have Jaccard similarity of at least 0.5 with at least two shared terms. Groups seen on at least `min_dates` distinct dates (default 3, minimum 2) are returned as candidate recurring issues for review, with citations, validated, missing, and excluded dates, and truncation flags.
+2. Present candidates as suggestions only. If the user wants to adopt a lesson, show the exact title, adoption date, and match terms, and call `journal_lesson_record` only after the user approves them. It appends one event to `improvements/lessons.jsonl` under the journal root, outside `notes/`. Retiring a lesson appends a separate retire event. Duplicate, future dated, malformed, oversized, or symlinked ledger input is refused.
+3. `journal_improvement_report` (read only) compares matching issue items in equal windows before and since adoption. The since window runs from adoption through the requested date (or the retirement date) and is capped at the most recent 90 days; the before window has the same length and ends the day before adoption. A window with fewer than 7 validated dates yields `insufficient evidence`. Otherwise the verdict is `no recurrence observed since adoption`, `reduced` (lower share of validated dates with a match), or `not improved`. Always state that this shows correlation over the recorded period, not proof of cause.
+
+Boundary: recording a lesson never changes Hermes memory, skills, prompts, configuration, or agent behavior. Do not promote a lesson into memory or a skill automatically; that remains a separate user approved action. These tools are not part of the restricted `my-journal-generation` toolset.
+
+Completion criterion: every candidate or verdict shown to the user carries its dates, citations, coverage, and the correlation caveat.
 
 ## Context Classification
 

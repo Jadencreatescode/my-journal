@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+Adds deterministic recurring issue alerts and user approved improvement tracking.
+
+1. Adds the read only `journal_recurring_issues` tool and `hermes journal recurring` command. It groups similar Blockers and Failures and Corrections and Preference Changes items from validated entries using normalized term sets and Jaccard similarity, and reports candidate recurring issues with dated citations, coverage, and truncation flags.
+2. Adds `journal_lesson_record`, which appends user approved lesson adoption and retirement events to `improvements/lessons.jsonl` in the journal root through descriptor anchored primitives. Duplicate, future dated, malformed, oversized, and symlinked ledger input is refused.
+3. Adds the read only `journal_improvement_report` tool and `hermes journal improvements` command. It compares matching items in equal windows before and since adoption (capped at 90 days, at least 7 validated dates per window) and states that results show correlation, not proof of cause.
+4. Maps all three tools through the native Windows to WSL bridge. The `my-journal-generation` toolset is unchanged.
+5. Includes the `improvements` directory in purge.
+
 ## 0.2.1
 
 Removes a 24 hour scheduled-binding completion lag, raises evidence limits, strengthens note redaction, heals stale bindings automatically, and adds social preview metadata.

@@ -22,8 +22,11 @@ from .schemas import (
     GENERATION_GET_CHUNK_SCHEMA,
     GENERATION_RECORD_DIGEST_SCHEMA,
     GENERATION_RESUME_SCHEMA,
+    IMPROVEMENT_REPORT_SCHEMA,
+    LESSON_RECORD_SCHEMA,
     RANGE_SCHEMA,
     READ_SCHEMA,
+    RECURRING_ISSUES_SCHEMA,
     SETUP_APPROVE_SCHEMA,
     SETUP_DATABASE_APPROVE_SCHEMA,
     SETUP_INVENTORY_SCHEMA,
@@ -47,6 +50,9 @@ TOOL_SCHEMAS = {
         DAILY_WORKLOAD_APPROVE_SCHEMA,
         SETUP_PLAN_SCHEMA,
         SETUP_APPROVE_SCHEMA,
+        RECURRING_ISSUES_SCHEMA,
+        LESSON_RECORD_SCHEMA,
+        IMPROVEMENT_REPORT_SCHEMA,
         GENERATION_COLLECT_SCHEMA,
         GENERATION_RESUME_SCHEMA,
         GENERATION_GET_CHUNK_SCHEMA,
@@ -267,6 +273,13 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     resolve = subs.add_parser("resolve-range")
     resolve.add_argument("range")
     subs.add_parser("setup-inventory")
+    recurring = subs.add_parser("recurring")
+    recurring.add_argument("range", nargs="?", default="last 30 days")
+    recurring.add_argument("--min-dates", type=int)
+    recurring.add_argument("--max-groups", type=int)
+    improvements = subs.add_parser("improvements")
+    improvements.add_argument("--lesson-id")
+    improvements.add_argument("--as-of")
     cron_setup = subs.add_parser("cron-setup")
     cron_setup.add_argument("--schedule", default="0 11 * * *")
     cron_setup.add_argument("--deliver", default="local")
@@ -275,6 +288,23 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     cron_remove.add_argument("--force-job-id")
     cron_remove.add_argument("--confirm", default="")
     parser.set_defaults(func=journal_command)
+
+
+def _recurring_payload(args: argparse.Namespace) -> dict[str, Any]:
+    payload: dict[str, Any] = {"range": args.range}
+    if args.min_dates is not None:
+        payload["min_dates"] = args.min_dates
+    if args.max_groups is not None:
+        payload["max_groups"] = args.max_groups
+    return payload
+
+
+def _improvements_payload(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in (("lesson_id", args.lesson_id), ("as_of", args.as_of))
+        if value is not None
+    }
 
 
 def journal_command(args: argparse.Namespace) -> int:
@@ -289,6 +319,10 @@ def journal_command(args: argparse.Namespace) -> int:
         operation, payload = "journal_resolve_range", {"range": args.range}
     elif command == "setup-inventory":
         operation, payload = "journal_setup_inventory", {}
+    elif command == "recurring":
+        operation, payload = "journal_recurring_issues", _recurring_payload(args)
+    elif command == "improvements":
+        operation, payload = "journal_improvement_report", _improvements_payload(args)
     elif command == "cron-setup":
         if args.wsl_hermes_home:
             _write_wsl_runtime_config(_bridge_paths()["windows_home"], args.wsl_hermes_home)
@@ -337,5 +371,5 @@ def register_windows(
         help="Inspect and plan the evidence backed My Journal",
         setup_fn=register_cli,
         handler_fn=journal_command,
-        description="Status, gaps, deterministic date ranges, and safe backfill planning.",
+        description="Status, gaps, deterministic date ranges, safe backfill planning, recurring issues, and improvement reports.",
     )

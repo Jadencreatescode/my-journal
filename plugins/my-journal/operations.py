@@ -43,7 +43,7 @@ from .tools import (
 
 PURGE_DIRECTORIES = (
     "notes", "evidence", "runs", "packets", "pending", "state", "approval-plans",
-    "reset-quarantine",
+    "reset-quarantine", "improvements",
 )
 _GENERATION_RECEIPT = re.compile(r"generation-[0-9a-f]{16}\.json")
 _GENERATION_LOCK = re.compile(r"generation(?:-[0-9a-f]{16})?\.lock")

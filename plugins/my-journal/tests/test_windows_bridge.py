@@ -93,7 +93,7 @@ class WindowsBridgeTests(unittest.TestCase):
             invoker=lambda operation, args, **kwargs: calls.append((operation, args)) or {"ok": True},
         )
 
-        self.assertEqual(len(registered), 16)
+        self.assertEqual(len(registered), 19)
         self.assertEqual({item["name"] for item in registered}, set(bridge.TOOL_SCHEMAS))
         for item in registered:
             result = json.loads(item["handler"]({"probe": item["name"]}))

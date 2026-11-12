@@ -32,6 +32,8 @@ His current work includes My Journal for Hermes, which turns approved conversati
 4. **Historical backfill that can continue.** Approved activity dates run oldest first, and interrupted evidence resumes from frozen evidence instead of being recollected.
 5. **Validated daily automation.** Required precollection freezes evidence before the scheduled agent starts. Required postvalidation and a locked execution contract prevent partial work from being reported as complete.
 6. **Portable ownership.** Canonical entries remain plain Markdown under your Hermes data root.
+7. **Recurring issue alerts.** A read only tool groups similar blockers and corrections across validated entries and lists candidate recurring issues with dated citations.
+8. **Improvement tracking.** Record a lesson you approve in an append only ledger, then compare how often matching issues appeared before and since adoption. Reports show correlation, not proof of cause, and never change memory or behavior.
 
 ## Try it without private data
 
@@ -59,7 +61,7 @@ Review `PRIVACY.md`, `SECURITY.md`, and `THREAT_MODEL.md` before enabling collec
 
 1. `skills/note-taking/my-journal` owns collection, evidence, privacy controls, digest receipts, validation, and note templates.
 2. `skills/note-taking/journal` owns conversational journal requests.
-3. `plugins/my-journal` owns 11 deterministic journal tools, five restricted generation tools, and `hermes journal`.
+3. `plugins/my-journal` owns 14 deterministic journal tools, five restricted generation tools, and `hermes journal`.
 4. `install.py` owns transactional installation, restore, uninstall, and interrupted activation recovery.
 
 Markdown under `journal/notes/YYYY/MM/YYYY-MM-DD.md` is canonical. Semantic stores are optional mirrors.
@@ -220,7 +222,11 @@ hermes journal preview "last 30 days"
 hermes journal resolve-range "last month"
 hermes journal maintenance
 hermes journal setup-inventory
+hermes journal recurring "last 30 days" --min-dates 3
+hermes journal improvements --as-of 2026-07-28
 ```
+
+Lessons are recorded only through the `journal_lesson_record` tool after you approve the exact title, adoption date, and match terms. It appends to `improvements/lessons.jsonl` in the journal root and never edits notes.
 
 Generation commands use Hermes with the dedicated `my-journal-generation` toolset. It exposes only five bounded journal operations and excludes terminal, web, general file, delegation, messaging, MCP, and unrelated plugin tools. Generation verifies that validated canonical notes exist before reporting success:
 
